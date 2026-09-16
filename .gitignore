@@ -1,0 +1,35 @@
+# dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# build
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# entorno
+.env
+.env*.local
+.vercel
+
+# sistema
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# ---------------------------------------------------------------
+# DATOS DE CLIENTE — nunca se versionan.
+# El tablero procesa los Excel en el navegador; no deben quedar
+# copias en el repositorio (este repo es publico).
+# ---------------------------------------------------------------
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+data/
+local/
