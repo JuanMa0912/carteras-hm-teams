@@ -1,24 +1,25 @@
 import * as XLSX from 'xlsx';
+import { identificarEmpresa } from './empresa';
 import { norm } from './format';
-import type { Aviso, Dataset, Doc, LineaBalance, ResultadoLectura, Tipo, TramoArchivo } from './types';
+import type {
+  Aviso, Cartera, Corte, Doc, Grupo, LineaBalance, ResultadoLectura, Tipo, TramoArchivo,
+} from './types';
 
 /* ------------------------------------------------------------------
  * ESTANDAR DE INGESTA
  *
- * Una hoja se considera valida si tiene una fila de cabecera que
- * contenga, como minimo, una columna de NOMBRE DEL TERCERO y una de
- * SALDO. Todo lo demas es opcional y se completa o se deduce.
+ * Una hoja se procesa si tiene una fila de cabecera con, al menos, una
+ * columna de NOMBRE DEL TERCERO y una de SALDO. Todo lo demas se completa
+ * o se deduce.
  *
- * A diferencia de la version anterior, ninguna hoja se descarta en
- * silencio: cada rechazo produce un aviso legible que explica que
- * columnas se encontraron y cual falto.
+ * Ninguna hoja se descarta en silencio: cada rechazo, deduccion o dato que
+ * falta produce un aviso legible.
  * ------------------------------------------------------------------ */
 
 type Campo =
   | 'cuenta' | 'nit' | 'nombre' | 'co' | 'documento'
   | 'fechaDcto' | 'fechaVcto' | 'dVenc' | 'saldo' | 'total';
 
-/** Sinonimos aceptados por columna. Se comparan normalizados. */
 const SINONIMOS: Record<Campo, string[]> = {
   cuenta:    ['cuenta_contable', 'cuenta contable', 'cuenta', 'codigo cuenta', 'cta'],
   nit:       ['nit', 'nit/cc', 'identificacion', 'documento identidad', 'cedula', 'id tercero'],
@@ -63,27 +64,33 @@ function aIso(v: unknown): string | null {
     if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
     const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
     if (m) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+    if (/^\d{8}$/.test(s)) return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6);
   }
   return null;
 }
 
+/**
+ * Texto a numero.
+ *
+ * El ERP puede exportar «1.234.567,89» o «1,234,567.89» segun la maquina donde
+ * se genere. Se decide por cual separador va de ultimo.
+ */
 function num(v: unknown): number {
   if (esNumero(v)) return v;
-  if (typeof v === 'string') {
-    const limpio = v.replace(/[^\d,.-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.');
-    const n = Number(limpio);
-    if (Number.isFinite(n)) return n;
-  }
-  return 0;
+  if (typeof v !== 'string') return 0;
+  const s = v.trim();
+  if (s === '') return 0;
+  const ultimaComa = s.lastIndexOf(',');
+  const ultimoPunto = s.lastIndexOf('.');
+  const limpio = ultimaComa > ultimoPunto ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  const n = Number.parseFloat(limpio.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
 }
 
 function diasEntre(isoA: string, isoB: string): number {
-  const a = Date.parse(isoA + 'T00:00:00Z');
-  const b = Date.parse(isoB + 'T00:00:00Z');
-  return Math.round((a - b) / 86400000);
+  return Math.round((Date.parse(isoA + 'T00:00:00Z') - Date.parse(isoB + 'T00:00:00Z')) / 86400000);
 }
 
-/** Puntua una fila como candidata a cabecera: cuantas columnas conocidas trae. */
 function puntuarCabecera(fila: unknown[]): number {
   let score = 0;
   for (let c = 0; c < fila.length; c++) {
@@ -95,33 +102,33 @@ function puntuarCabecera(fila: unknown[]): number {
   return score;
 }
 
-/** Deduce si la hoja es cartera por cobrar o por pagar. */
-function deducirTipo(hoja: string, docs: Doc[]): { tipo: Tipo; motivo: string } {
-  const n = norm(hoja);
-  if (/\bcxp\b|pagar|proveedor/.test(n)) return { tipo: 'CXP', motivo: 'el nombre de la hoja ("' + hoja + '")' };
-  if (/\bcxc\b|cobrar|cliente/.test(n)) return { tipo: 'CXC', motivo: 'el nombre de la hoja ("' + hoja + '")' };
-
-  // Por PUC: 1 = activo (por cobrar), 2 = pasivo (por pagar). Gana la mayoria ponderada por saldo.
-  let activo = 0;
-  let pasivo = 0;
-  for (const d of docs) {
-    const primer = d.cuenta.trim()[0];
-    if (primer === '1') activo += Math.abs(d.saldo);
-    else if (primer === '2') pasivo += Math.abs(d.saldo);
-  }
-  if (activo > 0 || pasivo > 0) {
-    return pasivo > activo
-      ? { tipo: 'CXP', motivo: 'que la mayoria del saldo esta en cuentas del pasivo (PUC 2x)' }
-      : { tipo: 'CXC', motivo: 'que la mayoria del saldo esta en cuentas del activo (PUC 1x)' };
-  }
-
-  const suma = docs.reduce((a, d) => a + d.saldo, 0);
-  return suma < 0
-    ? { tipo: 'CXP', motivo: 'que el saldo total de la hoja es negativo' }
-    : { tipo: 'CXC', motivo: 'que el saldo total de la hoja es positivo' };
+/**
+ * El PUC decide el grupo.
+ *
+ * En cartera por cobrar lo principal esta en el activo (cuentas 1x) y el
+ * anticipo en el pasivo (28x). En cartera por pagar es al reves: lo principal
+ * esta en el pasivo (2x) y los anticipos a proveedores en el activo (133x).
+ */
+function grupoDe(tipo: Tipo, cuenta: string): Grupo {
+  const principal = tipo === 'CXC' ? '1' : '2';
+  return cuenta.startsWith(principal) ? 'principal' : 'anticipo';
 }
 
-function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | null {
+/** `CXP` / `CXC` a partir del nombre de la hoja. */
+function tipoDeHoja(nombre: string): Tipo | null {
+  const n = norm(nombre);
+  if (/\bcxp\b|pagar|proveedor/.test(n)) return 'CXP';
+  if (/\bcxc\b|cobrar|cliente/.test(n)) return 'CXC';
+  return null;
+}
+
+interface HojaLeida {
+  cartera: Cartera;
+  fechaCorte: string | null;
+  empresaTexto: string | null;
+}
+
+function leerHoja(archivo: string, hoja: string, filas: unknown[][], avisos: Aviso[]): HojaLeida | null {
   /* --- 1. localizar la fila de cabecera --- */
   let headerIdx = -1;
   let mejor = 0;
@@ -135,9 +142,10 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
   }
   if (headerIdx < 0 || mejor < 3) {
     avisos.push({
-      nivel: 'aviso',
+      nivel: 'info',
+      archivo,
       hoja,
-      mensaje: 'No se encontro una fila de cabecera reconocible en las primeras ' + limite + ' filas. La hoja se omitio.',
+      mensaje: 'No tiene fila de cabecera de cartera; se omitió (suele ser una hoja auxiliar del ERP).',
     });
     return null;
   }
@@ -171,6 +179,7 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
     const halladas = CAMPOS.filter((k) => col[k] != null).join(', ') || 'ninguna';
     avisos.push({
       nivel: 'error',
+      archivo,
       hoja,
       mensaje:
         'Falta la columna de ' + faltan + '. Columnas reconocidas: ' + halladas + '. ' +
@@ -179,15 +188,8 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
     });
     return null;
   }
-  if (noReconocidas.length) {
-    avisos.push({
-      nivel: 'info',
-      hoja,
-      mensaje: 'Columnas ignoradas por no estar en el estandar: ' + noReconocidas.slice(0, 8).join(', ') + '.',
-    });
-  }
 
-  /* --- 3. fecha de corte (arriba de la cabecera) --- */
+  /* --- 3. fecha de corte --- */
   let fechaCorte: string | null = null;
   let corteRowIdx = -1;
   for (let r = 0; r < headerIdx; r++) {
@@ -208,7 +210,16 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
     if (corteRowIdx >= 0) break;
   }
 
-  /* --- 4. bloque de cuadre contable --- */
+  /* --- 4. empresa: SIEMPRE de la primera columna, nunca del vecino de
+   *        «fecha corte» (ahí el ERP escribe «Merkmios» en todos los
+   *        informes, sean de la empresa que sean). --- */
+  let empresaTexto: string | null = null;
+  for (let r = 0; r < headerIdx && !empresaTexto; r++) {
+    const v = (filas[r] ?? [])[0];
+    if (v != null && String(v).trim() !== '') empresaTexto = String(v).trim();
+  }
+
+  /* --- 5. bloque de cuadre contable --- */
   const balance: LineaBalance[] = [];
   let totalBalance: number | null = null;
   let difArchivo: number | null = null;
@@ -226,11 +237,11 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
       if (n.includes('total saldo balance')) totalBalance = valor;
       else if (n === 'dif' || n === 'diferencia') difArchivo = valor;
       else balance.push({ concepto, valor });
-      break; // solo el primer par (etiqueta, numero) de cada fila
+      break;
     }
   }
 
-  /* --- 5. fila de control de tramos (la misma que lleva "fecha corte") --- */
+  /* --- 6. fila de control de tramos --- */
   let controlTramos: number[] | null = null;
   let controlTotal: number | null = null;
   if (corteRowIdx >= 0 && tramosArchivo.length) {
@@ -240,120 +251,252 @@ function leerHoja(hoja: string, filas: unknown[][], avisos: Aviso[]): Dataset | 
     if (col.saldo != null && esNumero(fila[col.saldo])) controlTotal = fila[col.saldo] as number;
   }
 
-  /* --- 6. empresa --- */
-  let empresa: string | null = null;
-  for (let r = 0; r < headerIdx && !empresa; r++) {
-    const v = (filas[r] ?? [])[0];
-    if (v != null && String(v).trim() !== '') empresa = String(v).trim();
+  /* --- 7. tipo de cartera --- */
+  let tipo = tipoDeHoja(hoja);
+  if (!tipo) {
+    // Respaldo por PUC, ponderado por saldo.
+    let activo = 0;
+    let pasivo = 0;
+    for (let r = headerIdx + 1; r < filas.length; r++) {
+      const cru = String((filas[r] ?? [])[col.cuenta ?? -1] ?? '').trim();
+      const cta = cru.split(/\s+/)[0];
+      const s = Math.abs(num((filas[r] ?? [])[col.saldo]));
+      if (cta.startsWith('1')) activo += s;
+      else if (cta.startsWith('2')) pasivo += s;
+    }
+    tipo = pasivo > activo ? 'CXP' : 'CXC';
+    avisos.push({
+      nivel: 'aviso',
+      archivo,
+      hoja,
+      mensaje: `El nombre de la hoja no dice si es por cobrar o por pagar; se clasificó como ${
+        tipo === 'CXC' ? 'por cobrar' : 'por pagar'
+      } según las cuentas del PUC. Verifícalo.`,
+    });
   }
 
-  /* --- 7. filas de detalle --- */
+  /* --- 8. filas de detalle --- */
   const docs: Doc[] = [];
-  let sinFecha = 0;
   let sinDVenc = 0;
+  let sinCuenta = 0;
   for (let r = headerIdx + 1; r < filas.length; r++) {
     const fila = filas[r];
     if (!fila) continue;
     const nombre = fila[col.nombre];
     if (nombre == null || String(nombre).trim() === '') continue;
 
+    /* La celda trae «13300500 A PROVEEDORES»: el codigo es el primer token. */
+    const cuentaCruda = col.cuenta != null ? String(fila[col.cuenta] ?? '').trim() : '';
+    const cuenta = cuentaCruda.split(/\s+/)[0];
+    if (col.cuenta != null && !/^\d{4,}$/.test(cuenta)) {
+      sinCuenta++;
+      continue;
+    }
+
+    const saldo = num(fila[col.saldo]);
+    if (saldo === 0) continue;
+
     const fechaVcto = col.fechaVcto != null ? aIso(fila[col.fechaVcto]) : null;
     let dVenc: number;
     if (col.dVenc != null && esNumero(fila[col.dVenc])) {
-      dVenc = fila[col.dVenc] as number;
+      dVenc = Math.round(fila[col.dVenc] as number);
     } else if (fechaVcto && fechaCorte) {
-      dVenc = diasEntre(fechaCorte, fechaVcto); // respaldo: se calcula contra el corte
+      dVenc = diasEntre(fechaCorte, fechaVcto);
       sinDVenc++;
     } else {
       dVenc = 0;
       sinDVenc++;
     }
-    if (!fechaVcto) sinFecha++;
 
     docs.push({
-      cuenta: col.cuenta != null ? String(fila[col.cuenta] ?? '').trim() : '',
-      nit: col.nit != null && fila[col.nit] != null ? String(fila[col.nit]).trim() : '',
+      cuenta,
+      cuentaNombre: cuentaCruda.slice(cuenta.length).trim(),
+      grupo: grupoDe(tipo, cuenta),
+      /* Sin ceros a la izquierda: si un informe los trae, el mismo tercero se
+       * partiria en dos entradas. */
+      nit: col.nit != null && fila[col.nit] != null ? String(fila[col.nit]).trim().replace(/^0+(?=.)/, '') : '',
       nombre: String(nombre).trim(),
       co: col.co != null && fila[col.co] != null ? String(fila[col.co]).trim() : '',
       documento: col.documento != null && fila[col.documento] != null ? String(fila[col.documento]).trim() : '',
       fechaDcto: col.fechaDcto != null ? aIso(fila[col.fechaDcto]) : null,
       fechaVcto,
       dVenc,
-      saldo: num(fila[col.saldo]),
+      saldo,
       tramosArchivo: tramosArchivo.map((t) => num(fila[t.col])),
     });
   }
 
   if (!docs.length) {
-    avisos.push({ nivel: 'aviso', hoja, mensaje: 'La cabecera se reconocio pero no hay filas de detalle debajo.' });
+    avisos.push({ nivel: 'aviso', archivo, hoja, mensaje: 'La cabecera se reconoció pero no hay filas con saldo debajo.' });
     return null;
   }
   if (sinDVenc) {
     avisos.push({
       nivel: 'info',
+      archivo,
       hoja,
-      mensaje: sinDVenc + ' de ' + docs.length + ' documentos no traian dias vencidos; se calcularon contra la fecha de corte.',
+      mensaje: `${sinDVenc} de ${docs.length} documentos no traían días vencidos; se calcularon contra la fecha de corte.`,
     });
   }
-  if (sinFecha) {
-    avisos.push({ nivel: 'info', hoja, mensaje: sinFecha + ' documentos sin fecha de vencimiento legible.' });
+  if (sinCuenta) {
+    avisos.push({
+      nivel: 'info',
+      archivo,
+      hoja,
+      mensaje: `${sinCuenta} filas se omitieron por no tener un código de cuenta contable válido (suelen ser subtotales).`,
+    });
   }
   if (!fechaCorte) {
     avisos.push({
-      nivel: 'aviso',
+      nivel: 'error',
+      archivo,
       hoja,
-      mensaje: 'No se encontro la fecha de corte en el encabezado. Los tramos se calculan solo con los dias vencidos del archivo.',
+      mensaje: 'No se encontró la fecha de corte (se busca la etiqueta «fecha corte» en la cabecera). Sin ella el corte no se puede ubicar en el tiempo y la hoja se omitió.',
     });
+    return null;
   }
 
-  const { tipo, motivo } = deducirTipo(hoja, docs);
-  avisos.push({
-    nivel: 'info',
-    hoja,
-    mensaje: 'Clasificada como ' + (tipo === 'CXC' ? 'cartera por cobrar' : 'cartera por pagar') + ' segun ' + motivo + '.',
-  });
-
   return {
-    tipo, hoja, empresa, fechaCorte, docs,
-    balance, totalBalance, difArchivo,
-    controlTramos, controlTotal, tramosArchivo,
+    cartera: { tipo, hoja, docs, balance, totalBalance, difArchivo, controlTramos, controlTotal, tramosArchivo },
+    fechaCorte,
+    empresaTexto,
   };
 }
 
-/** Lee un libro de Excel completo y devuelve los datasets reconocidos + avisos. */
-export function leerLibro(buffer: ArrayBuffer, nombreArchivo: string): ResultadoLectura {
-  const avisos: Aviso[] = [];
-  const datasets: Partial<Record<Tipo, Dataset>> = {};
-
+/** Lee un libro y devuelve los cortes que contiene (normalmente uno). */
+function leerLibro(buffer: ArrayBuffer, archivo: string, avisos: Aviso[]): Corte[] {
   const wb = XLSX.read(new Uint8Array(buffer), { type: 'array', cellDates: true });
+  const porCorte = new Map<string, Corte>();
 
   for (const hoja of wb.SheetNames) {
     const filas = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[hoja], {
       header: 1, raw: true, defval: null, blankrows: true,
     });
-    const ds = leerHoja(hoja, filas, avisos);
-    if (!ds) continue;
+    const leida = leerHoja(archivo, hoja, filas, avisos);
+    if (!leida) continue;
 
-    const previo = datasets[ds.tipo];
-    if (previo) {
-      // Dos hojas del mismo tipo: se acumulan los documentos.
-      previo.docs = previo.docs.concat(ds.docs);
-      previo.empresa = previo.empresa ?? ds.empresa;
-      previo.fechaCorte = previo.fechaCorte ?? ds.fechaCorte;
-      avisos.push({ nivel: 'info', hoja, mensaje: 'Sus documentos se sumaron a los de la hoja "' + previo.hoja + '".' });
+    const empresa = identificarEmpresa(leida.empresaTexto);
+    if (!empresa) {
+      avisos.push({
+        nivel: 'error',
+        archivo,
+        hoja,
+        mensaje: 'No se pudo identificar la empresa: la primera columna de la cabecera está vacía. La hoja se omitió.',
+      });
+      continue;
+    }
+
+    const id = empresa.id + '|' + leida.fechaCorte;
+    let corte = porCorte.get(id);
+    if (!corte) {
+      corte = {
+        id,
+        empresaId: empresa.id,
+        empresaNombre: empresa.nombre,
+        fecha: leida.fechaCorte!,
+        mes: leida.fechaCorte!.slice(0, 7),
+        archivo,
+        carteras: {},
+      };
+      porCorte.set(id, corte);
+    }
+
+    const previa = corte.carteras[leida.cartera.tipo];
+    if (previa) {
+      previa.docs = previa.docs.concat(leida.cartera.docs);
+      avisos.push({
+        nivel: 'info',
+        archivo,
+        hoja,
+        mensaje: `Sus documentos se sumaron a los de la hoja «${previa.hoja}» (misma cartera y mismo corte).`,
+      });
     } else {
-      datasets[ds.tipo] = ds;
+      corte.carteras[leida.cartera.tipo] = leida.cartera;
     }
   }
 
-  if (!datasets.CXC && !datasets.CXP) {
+  return Array.from(porCorte.values());
+}
+
+export interface EntradaLibro {
+  nombre: string;
+  buffer: ArrayBuffer;
+}
+
+/**
+ * Lee varios libros de una sola vez.
+ *
+ * Se pueden soltar tantos archivos como se quiera: varias empresas del mismo
+ * mes, varios meses de la misma empresa, o las dos cosas. Cada combinación
+ * (empresa, fecha de corte) queda como un corte independiente.
+ *
+ * Un corte que ya estaba se REEMPLAZA por el del archivo nuevo. Es lo que se
+ * espera al volver a subir un informe corregido, y evita que dos versiones del
+ * mismo mes se sumen.
+ *
+ * Toma buffers y no `File` para que el verificador de línea de comandos use
+ * exactamente este código y no una copia que se desactualice.
+ */
+export function leerBuffers(entradas: EntradaLibro[]): ResultadoLectura {
+  const avisos: Aviso[] = [];
+  const porId = new Map<string, Corte>();
+
+  for (const { nombre, buffer } of entradas) {
+    try {
+      const cortes = leerLibro(buffer, nombre, avisos);
+      if (!cortes.length) {
+        avisos.push({ nivel: 'aviso', archivo: nombre, mensaje: 'No se reconoció ninguna hoja de cartera en este archivo.' });
+      }
+      for (const c of cortes) {
+        if (porId.has(c.id)) {
+          avisos.push({
+            nivel: 'aviso',
+            archivo: nombre,
+            mensaje: `El corte de ${c.empresaNombre} al ${c.fecha} ya venía en otro archivo de esta carga; se conservó el último leído.`,
+          });
+        }
+        porId.set(c.id, c);
+      }
+    } catch (e) {
+      avisos.push({
+        nivel: 'error',
+        archivo: nombre,
+        mensaje: 'No se pudo abrir el archivo: ' + (e instanceof Error ? e.message : String(e)),
+      });
+    }
+  }
+
+  const cortes = Array.from(porId.values()).sort(
+    (a, b) => a.fecha.localeCompare(b.fecha) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
+  );
+
+  if (!cortes.length) {
     avisos.push({
       nivel: 'error',
       mensaje:
-        'Ninguna hoja del archivo cumple el estandar minimo (una columna de nombre del tercero y una de saldo). ' +
-        'Revisa docs/ESTANDAR-ARCHIVO.md.',
+        'Ningún archivo cumple el estándar mínimo: una fila de cabecera con nombre del tercero y saldo, ' +
+        'y la etiqueta «fecha corte» en el encabezado. Revisa docs/ESTANDAR-ARCHIVO.md.',
     });
   }
 
-  return { archivo: nombreArchivo, datasets, avisos };
+  return { cortes, avisos };
+}
+
+/** Envoltorio para el navegador: convierte los `File` en buffers y delega. */
+export async function leerArchivos(archivos: File[]): Promise<ResultadoLectura> {
+  const entradas: EntradaLibro[] = [];
+  const fallos: Aviso[] = [];
+  for (const f of archivos) {
+    try {
+      entradas.push({ nombre: f.name, buffer: await f.arrayBuffer() });
+    } catch (e) {
+      fallos.push({
+        nivel: 'error',
+        archivo: f.name,
+        mensaje: 'No se pudo leer el archivo del disco: ' + (e instanceof Error ? e.message : String(e)),
+      });
+    }
+  }
+  const r = leerBuffers(entradas);
+  return { cortes: r.cortes, avisos: [...fallos, ...r.avisos] };
 }

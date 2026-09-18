@@ -6,13 +6,18 @@ import { conteoPorTramo, totalDe, totalesPorTramo } from '@/lib/aggregate';
 import { fmtMoney, fmtNum, fmtPct, type Escala } from '@/lib/format';
 
 /**
- * Antigüedad de saldos por tramo.
+ * Antigüedad de saldos por tramo. Es un CONTROL, no solo un dibujo.
  *
- * Forma: barras horizontales — la comparación es de magnitud entre pocas
- * categorías ordenadas, con etiquetas largas. Color: rampa ordinal de un solo
- * tono (azul para CxC, naranja para CxP), clara → oscura conforme aumenta la
- * mora. Los saldos negativos (anticipos, notas crédito) se dibujan con textura
- * diagonal porque su longitud representa magnitud, no deuda.
+ * Pulsar un tramo lo selecciona en TODO el tablero —detalle, mayores saldos y
+ * evolución— y volver a pulsarlo lo suelta. El filtro lleva la cartera
+ * consigo: elegir «181–360» en la de pagar no puede dejar el detalle mostrando
+ * la de cobrar.
+ *
+ * Forma: barras horizontales — magnitud entre pocas categorías ordenadas, con
+ * etiquetas largas. Color: rampa ordinal de un solo tono (azul para CxC,
+ * naranja para CxP), donde el contraste contra el fondo crece con la mora. Los
+ * saldos a favor se dibujan con textura diagonal porque su longitud representa
+ * magnitud, no deuda.
  */
 
 const RAMPA: Record<Tipo, string[]> = {
@@ -25,18 +30,20 @@ interface Props {
   docs: Doc[];
   tramos: TramoDef[];
   escala: Escala;
+  /** Tramo seleccionado en el tablero, si la selección es de ESTA cartera. */
+  tramoActivo: string | null;
+  onTramo: (tipo: Tipo, key: string) => void;
 }
 
-export default function AgingChart({ tipo, docs, tramos, escala }: Props) {
+export default function AgingChart({ tipo, docs, tramos, escala, tramoActivo, onTramo }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const [tabla, setTabla] = useState(false);
 
   const { valores, conteos, total, max } = useMemo(() => {
     const v = totalesPorTramo(docs, tramos);
-    const c = conteoPorTramo(docs, tramos);
     return {
       valores: v,
-      conteos: c,
+      conteos: conteoPorTramo(docs, tramos),
       total: totalDe(docs),
       max: Math.max(1, ...v.map((x) => Math.abs(x))),
     };
@@ -81,27 +88,29 @@ export default function AgingChart({ tipo, docs, tramos, escala }: Props) {
 
   return (
     <>
-      <div className="bars" role="img" aria-label={`Antigüedad de saldos por tramo. ${tramos
-        .map((t, i) => `${t.etiqueta}: ${fmtMoney(valores[i], escala)}`)
-        .join('. ')}`}>
+      <div className="bars">
         {tramos.map((t, i) => {
           const v = valores[i];
           const neg = v < -0.5;
           const pct = Math.max(Math.abs(v) > 0.5 ? 1.5 : 0, (Math.abs(v) / max) * 100);
           const color = rampa[i];
+          const activo = tramoActivo === t.key;
           return (
-            <div
+            <button
+              type="button"
               key={t.key}
-              className="bar-row"
+              className={`bar-row${activo ? ' activo' : ''}`}
+              aria-pressed={activo}
+              title={activo ? 'Quitar este filtro' : 'Filtrar el tablero por este tramo'}
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover(null)}
               onFocus={() => setHover(i)}
               onBlur={() => setHover(null)}
-              tabIndex={0}
+              onClick={() => onTramo(tipo, t.key)}
             >
-              <div className="bar-lbl">{t.etiqueta}</div>
-              <div className="bar-track">
-                <div
+              <span className="bar-lbl">{t.etiqueta}</span>
+              <span className="bar-track">
+                <span
                   className="bar-fill"
                   style={{
                     width: pct + '%',
@@ -111,29 +120,30 @@ export default function AgingChart({ tipo, docs, tramos, escala }: Props) {
                     border: neg ? `1px solid ${color}` : undefined,
                   }}
                 />
-              </div>
-              <div className="bar-val num">{fmtMoney(v, escala)}</div>
+              </span>
+              <span className="bar-val num">{fmtMoney(v, escala)}</span>
               {hover === i && (
-                <div className="tip" role="status">
-                  <div>
+                <span className="tip" role="status">
+                  <span className="tip-l">
                     <strong>{t.etiqueta}</strong>
-                  </div>
-                  <div>
+                  </span>
+                  <span className="tip-l">
                     <span className="tip-k">Saldo </span>
                     {fmtMoney(v, escala)}
-                  </div>
-                  <div>
+                  </span>
+                  <span className="tip-l">
                     <span className="tip-k">Participación </span>
                     {total ? fmtPct((v / total) * 100) : '—'}
-                  </div>
-                  <div>
+                  </span>
+                  <span className="tip-l">
                     <span className="tip-k">Documentos </span>
                     {fmtNum(conteos[i])}
-                  </div>
-                  {neg && <div className="tip-k">Saldo a favor (anticipo o nota crédito)</div>}
-                </div>
+                  </span>
+                  {neg && <span className="tip-l tip-k">Saldo a favor (anticipo o nota crédito)</span>}
+                  <span className="tip-l tip-k">{activo ? 'Clic para quitar el filtro' : 'Clic para filtrar el tablero'}</span>
+                </span>
               )}
-            </div>
+            </button>
           );
         })}
       </div>

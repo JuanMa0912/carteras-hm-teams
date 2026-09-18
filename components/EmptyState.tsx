@@ -5,26 +5,48 @@
  * hay cartera de ningún cliente publicada en una URL abierta, y el archivo
  * nunca sale del equipo de quien lo abre.
  */
-export default function EmptyState({ onElegir }: { onElegir: () => void }) {
+export default function EmptyState({
+  onElegir,
+  onImportarHistorial,
+  hayHistorial,
+}: {
+  onElegir: () => void;
+  onImportarHistorial: () => void;
+  hayHistorial: boolean;
+}) {
   return (
     <div className="empty-state">
-      <h2>Carga el reporte de edades</h2>
+      <h2>Carga los informes de edades</h2>
       <p>
-        Arrastra aquí el archivo <code>.xlsx</code> de cartera por edades, o búscalo en tu equipo. El tablero
-        reconoce las hojas de cartera por cobrar y por pagar, las clasifica y las cruza contra el cuadre
-        contable que trae el propio archivo.
+        Arrastra aquí los archivos <code>.xlsx</code> de cartera por edades. Puedes soltar varios a la vez:
+        una empresa por archivo, o varios meses de la misma empresa. Cada combinación de empresa y fecha de
+        corte queda como un corte independiente.
+      </p>
+      <p>
+        El tablero reconoce las hojas de cartera por cobrar y por pagar, separa los anticipos de la cartera
+        real y cruza cada corte contra el cuadre contable que trae el propio archivo.
       </p>
       <div className="cta">
         <button type="button" className="btn primary" onClick={onElegir}>
-          ⇪ Elegir archivo .xlsx
+          ⇪ Elegir archivos .xlsx
+        </button>
+        <button type="button" className="btn" onClick={onImportarHistorial}>
+          ⇪ Importar historial
         </button>
       </div>
+      {hayHistorial && (
+        <p style={{ marginTop: 14, fontSize: 12.5 }}>
+          Hay historial mensual guardado en este navegador, pero no el detalle. Suelta un archivo para volver
+          a ver la antigüedad y el detalle.
+        </p>
+      )}
 
       <div className="spec">
-        <div className="section-label">Qué debe traer el archivo</div>
+        <div className="section-label">Qué debe traer cada archivo</div>
         <p style={{ margin: '0 0 12px' }}>
           Mínimo indispensable: una fila de cabecera con una columna de <strong>nombre del tercero</strong> y
-          otra de <strong>saldo</strong>. Todo lo demás es opcional y mejora el análisis.
+          otra de <strong>saldo</strong>, y la etiqueta <code>fecha corte</code> en el encabezado. El nombre de
+          la empresa se lee de la primera columna.
         </p>
         <table>
           <thead>
@@ -52,6 +74,12 @@ export default function EmptyState({ onElegir }: { onElegir: () => void }) {
               </td>
             </tr>
             <tr>
+              <td>Cuenta contable</td>
+              <td>
+                <code>cuenta_contable</code> <code>cuenta</code> — decide qué es cartera y qué es anticipo
+              </td>
+            </tr>
+            <tr>
               <td>NIT</td>
               <td>
                 <code>nit</code> <code>identificacion</code> <code>cedula</code>
@@ -61,12 +89,6 @@ export default function EmptyState({ onElegir }: { onElegir: () => void }) {
               <td>Días vencidos</td>
               <td>
                 <code>d_venc</code> <code>dias vencidos</code> <code>edad</code>
-              </td>
-            </tr>
-            <tr>
-              <td>Fecha de vencimiento</td>
-              <td>
-                <code>fecha_vcto</code> <code>fecha vencimiento</code>
               </td>
             </tr>
             <tr>
@@ -85,7 +107,7 @@ export default function EmptyState({ onElegir }: { onElegir: () => void }) {
 
       <div className="privacy">
         <span aria-hidden="true">🔒</span>
-        El archivo se lee en tu navegador. No se sube a ningún servidor ni se guarda en internet.
+        Los archivos se leen en tu navegador. No se suben a ningún servidor ni se guardan en internet.
       </div>
     </div>
   );

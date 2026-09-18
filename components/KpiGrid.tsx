@@ -2,27 +2,33 @@
 
 import { useMemo } from 'react';
 import type { Doc, TramoDef } from '@/lib/types';
-import { totalDe, totalesPorTramo } from '@/lib/aggregate';
-import { fmtDate, fmtMoney, fmtNum, fmtPct, type Escala } from '@/lib/format';
+import { totalDe, totalesPorTramo, type ModoAnticipos } from '@/lib/aggregate';
+import { fmtMoney, fmtNum, fmtPct, type Escala } from '@/lib/format';
 
 /**
  * Cifras de cabecera. Son números sueltos, no gráficos: la pregunta que
  * responden es "¿cuánto?", y un número grande la responde mejor que una barra.
+ *
+ * La casilla de anticipos está a propósito: con el tablero en cartera bruta,
+ * esa plata NO está sumada en las otras casillas, y no mostrarla en ninguna
+ * parte hace que el total parezca no cuadrar contra el balance.
  */
 export default function KpiGrid({
   docsCxc,
   docsCxp,
+  anticiposCxc,
+  anticiposCxp,
+  modo,
   tramos,
   escala,
-  fechaCorte,
-  fuente,
 }: {
   docsCxc: Doc[];
   docsCxp: Doc[];
+  anticiposCxc: number;
+  anticiposCxp: number;
+  modo: ModoAnticipos;
   tramos: TramoDef[];
   escala: Escala;
-  fechaCorte: string | null;
-  fuente: string;
 }) {
   const k = useMemo(() => {
     const totC = totalDe(docsCxc);
@@ -42,23 +48,19 @@ export default function KpiGrid({
     };
   }, [docsCxc, docsCxp, tramos]);
 
-  const umbralCritico = tramos[3].desde;
+  const umbral = (tramos[3].desde ?? 1) - 1;
+  const etiquetaModo = modo === 'bruta' ? 'bruta' : 'neta';
+  const anticipos = anticiposCxc + anticiposCxp;
 
-  const tiles: {
-    lbl: string;
-    dot: string;
-    val: string;
-    sub: string;
-    color?: string;
-  }[] = [
+  const tiles: { lbl: string; dot: string; val: string; sub: string; color?: string }[] = [
     {
-      lbl: 'Por cobrar',
+      lbl: `Por cobrar (${etiquetaModo})`,
       dot: 'var(--cxc)',
       val: fmtMoney(k.totC, escala),
       sub: `${fmtNum(docsCxc.length)} documentos`,
     },
     {
-      lbl: 'Por pagar',
+      lbl: `Por pagar (${etiquetaModo})`,
       dot: 'var(--cxp)',
       val: fmtMoney(k.totP, escala),
       sub: `${fmtNum(docsCxp.length)} documentos`,
@@ -68,25 +70,28 @@ export default function KpiGrid({
       dot: k.neto >= 0 ? 'var(--good)' : 'var(--critical)',
       val: fmtMoney(k.neto, escala),
       color: k.neto >= 0 ? 'var(--success-text)' : 'var(--danger-text)',
-      sub: k.neto >= 0 ? 'a favor de la empresa' : 'se debe más de lo que se tiene por cobrar',
+      sub: k.neto >= 0 ? 'a favor de la empresa' : 'se debe más de lo que hay por cobrar',
     },
     {
-      lbl: `Por cobrar con más de ${umbralCritico! - 1} días`,
+      lbl: `Por cobrar con más de ${umbral} días`,
       dot: 'var(--critical)',
       val: fmtMoney(k.critC, escala),
       sub: `${fmtPct(k.pctC)} del total por cobrar`,
     },
     {
-      lbl: `Por pagar con más de ${umbralCritico! - 1} días`,
+      lbl: `Por pagar con más de ${umbral} días`,
       dot: 'var(--critical)',
       val: fmtMoney(k.critP, escala),
       sub: `${fmtPct(k.pctP)} del total por pagar`,
     },
     {
-      lbl: 'Corte del reporte',
+      lbl: 'Anticipos',
       dot: 'var(--ink-muted)',
-      val: fmtDate(fechaCorte),
-      sub: fuente,
+      val: fmtMoney(anticipos, escala),
+      sub:
+        modo === 'bruta'
+          ? 'fuera de las cifras de arriba'
+          : 'ya descontados de las cifras de arriba',
     },
   ];
 

@@ -1,42 +1,69 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { leerLibro } from '@/lib/parser';
-import { aCsv, calcularCuadre, sanearUmbrales, tramosDe, totalDe, UMBRALES_POR_DEFECTO } from '@/lib/aggregate';
+import { leerArchivos } from '@/lib/parser';
+import {
+  aCsv, aplicarAnticipos, calcularCuadre, sanearUmbrales, serieMensual, tramoDe, tramosDe,
+  totalDe, totalDeGrupo, UMBRALES_POR_DEFECTO, type ModoAnticipos,
+} from '@/lib/aggregate';
+import {
+  cargar, exportarHistorial, fundirHistorial, guardar, historialDeCortes,
+  HistorialInvalidoError, importarHistorial, limpiar,
+} from '@/lib/almacen';
+import { CONSOLIDADO, etiquetaScope } from '@/lib/empresa';
 import { fmtDate, fmtMoney, fmtNum, NOTA_ESCALA, type Escala } from '@/lib/format';
-import type { Doc, ResultadoLectura, Tipo } from '@/lib/types';
+import type { Aviso, Corte, DocVista, PuntoHistorial, Tipo } from '@/lib/types';
 
 import AgingChart from '@/components/AgingChart';
 import AvisosPanel from '@/components/AvisosPanel';
 import CuadrePanel from '@/components/CuadrePanel';
 import DetailTable from '@/components/DetailTable';
 import EmptyState from '@/components/EmptyState';
+import EvolucionChart from '@/components/EvolucionChart';
 import KpiGrid from '@/components/KpiGrid';
 import TopTable from '@/components/TopTable';
 import TramoEditor from '@/components/TramoEditor';
 
-const CLAVE_ALMACEN = 'cartera-hm:v1';
 const CLAVE_TEMA = 'cartera-hm:tema';
 
+/** Cuántos terceros se pueden comparar a la vez. Más y el agregado deja de decir cuál se movió. */
+const MAX_TERCEROS = 5;
+
+/**
+ * UNA sola selección manda en todo el tablero: qué cartera, qué tramo y qué
+ * terceros. Tener un filtro por tarjeta los deja desincronizados y se termina
+ * viendo el tramo de una cartera con el detalle de la otra.
+ */
+interface Seleccion {
+  tipo: Tipo;
+  tramo: string | null;
+  nits: string[];
+}
+
 export default function Page() {
-  const [resultado, setResultado] = useState<ResultadoLectura | null>(null);
+  const [cortes, setCortes] = useState<Corte[]>([]);
+  const [historial, setHistorial] = useState<PuntoHistorial[]>([]);
+  const [avisos, setAvisos] = useState<Aviso[]>([]);
+  const [detalleDescartado, setDetalleDescartado] = useState(false);
+
+  const [scope, setScope] = useState<string>(CONSOLIDADO);
+  const [fechaSel, setFechaSel] = useState<string>('');
+  const [modo, setModo] = useState<ModoAnticipos>('bruta');
   const [escala, setEscala] = useState<Escala>(1);
   const [umbrales, setUmbrales] = useState<number[]>([...UMBRALES_POR_DEFECTO]);
-  const [tipoDetalle, setTipoDetalle] = useState<Tipo>('CXC');
-  const [nitCxc, setNitCxc] = useState('');
-  const [nitCxp, setNitCxp] = useState('');
+  const [sel, setSel] = useState<Seleccion>({ tipo: 'CXC', tramo: null, nits: [] });
+
   const [arrastrando, setArrastrando] = useState(false);
+  const [cargando, setCargando] = useState(false);
   const [toast, setToast] = useState<{ msg: string; err?: boolean } | null>(null);
   const [tema, setTema] = useState<'auto' | 'light' | 'dark'>('auto');
   const inputRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
-  /* ---------- avisos efímeros ---------- */
-  const avisar = useCallback((msg: string, err = false) => {
-    setToast({ msg, err });
-  }, []);
+  const avisar = useCallback((msg: string, err = false) => setToast({ msg, err }), []);
   useEffect(() => {
     if (!toast) return;
-    const h = setTimeout(() => setToast(null), 5000);
+    const h = setTimeout(() => setToast(null), 6000);
     return () => clearTimeout(h);
   }, [toast]);
 
@@ -70,45 +97,59 @@ export default function Page() {
     }
   }
 
-  /* ---------- restaurar la última carga ---------- */
+  /* ---------- restaurar ---------- */
   useEffect(() => {
-    try {
-      const crudo = localStorage.getItem(CLAVE_ALMACEN);
-      if (crudo) setResultado(JSON.parse(crudo) as ResultadoLectura);
-    } catch {
-      /* dato corrupto o almacenamiento bloqueado: se arranca en blanco */
-    }
+    const g = cargar();
+    if (g.historial.length) setHistorial(g.historial);
+    if (g.cortes.length) setCortes(g.cortes);
   }, []);
 
-  const guardar = useCallback((r: ResultadoLectura) => {
-    try {
-      localStorage.setItem(CLAVE_ALMACEN, JSON.stringify(r));
-    } catch {
-      /* archivo demasiado grande o almacenamiento lleno: no se persiste */
-    }
-  }, []);
-
-  /* ---------- carga de archivo ---------- */
+  /* ---------- carga de archivos ---------- */
   const procesar = useCallback(
-    async (file: File) => {
+    async (files: File[]) => {
+      if (!files.length) return;
+      setCargando(true);
       try {
-        const buffer = await file.arrayBuffer();
-        const r = leerLibro(buffer, file.name);
-        const hayDatos = Boolean(r.datasets.CXC || r.datasets.CXP);
-        setResultado(r);
-        if (hayDatos) {
-          guardar(r);
-          const nC = r.datasets.CXC?.docs.length ?? 0;
-          const nP = r.datasets.CXP?.docs.length ?? 0;
-          avisar(`Archivo cargado: ${fmtNum(nC)} documentos por cobrar y ${fmtNum(nP)} por pagar.`);
-        } else {
-          avisar('No se reconoció ninguna hoja. Revisa las notas de lectura.', true);
+        const r = await leerArchivos(files);
+        setAvisos(r.avisos);
+        if (!r.cortes.length) {
+          avisar('No se reconoció ningún corte. Revisa las notas de lectura.', true);
+          return;
         }
+
+        /* Un corte que ya estaba se reemplaza por el nuevo: es lo que se
+         * espera al volver a subir un informe corregido. */
+        const fusion = new Map<string, Corte>();
+        for (const c of cortes) fusion.set(c.id, c);
+        for (const c of r.cortes) fusion.set(c.id, c);
+        const todos = Array.from(fusion.values()).sort(
+          (a, b) => a.fecha.localeCompare(b.fecha) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
+        );
+
+        const hist = fundirHistorial(historial, historialDeCortes(r.cortes));
+        setCortes(todos);
+        setHistorial(hist);
+        setDetalleDescartado(guardar(hist, todos));
+
+        /* Se muestra el corte más reciente de los que acaban de entrar. */
+        const ultima = r.cortes.reduce((a, c) => (c.fecha > a ? c.fecha : a), r.cortes[0].fecha);
+        setFechaSel(ultima);
+        setSel({ tipo: 'CXC', tramo: null, nits: [] });
+
+        const empresas = new Set(r.cortes.map((c) => c.empresaId)).size;
+        const meses = new Set(r.cortes.map((c) => c.mes)).size;
+        avisar(
+          `${r.cortes.length} corte${r.cortes.length === 1 ? '' : 's'} cargado${
+            r.cortes.length === 1 ? '' : 's'
+          }: ${empresas} empresa${empresas === 1 ? '' : 's'}, ${meses} mes${meses === 1 ? '' : 'es'}.`
+        );
       } catch (e) {
-        avisar('No se pudo leer el archivo: ' + (e instanceof Error ? e.message : String(e)), true);
+        avisar('No se pudo leer: ' + (e instanceof Error ? e.message : String(e)), true);
+      } finally {
+        setCargando(false);
       }
     },
-    [avisar, guardar]
+    [avisar, cortes, historial]
   );
 
   useEffect(() => {
@@ -122,8 +163,8 @@ export default function Page() {
     function onDrop(e: DragEvent) {
       e.preventDefault();
       setArrastrando(false);
-      const f = e.dataTransfer?.files?.[0];
-      if (f) void procesar(f);
+      const fs = Array.from(e.dataTransfer?.files ?? []);
+      if (fs.length) void procesar(fs);
     }
     document.addEventListener('dragover', onOver);
     document.addEventListener('dragenter', onOver);
@@ -139,94 +180,216 @@ export default function Page() {
 
   /* ---------- derivados ---------- */
   const tramos = useMemo(() => tramosDe(umbrales), [umbrales]);
-  const dsCxc = resultado?.datasets.CXC ?? null;
-  const dsCxp = resultado?.datasets.CXP ?? null;
-  const docsCxc = useMemo(() => dsCxc?.docs ?? [], [dsCxc]);
-  const docsCxp = useMemo(() => dsCxp?.docs ?? [], [dsCxp]);
-  const hayDatos = docsCxc.length > 0 || docsCxp.length > 0;
 
-  const empresa = dsCxc?.empresa ?? dsCxp?.empresa ?? null;
-  const fechaCorte = dsCxc?.fechaCorte ?? dsCxp?.fechaCorte ?? null;
+  const empresas = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of cortes) m.set(c.empresaId, c.empresaNombre);
+    for (const p of historial) if (!m.has(p.empresaId)) m.set(p.empresaId, p.empresaNombre);
+    return Array.from(m, ([id, nombre]) => ({ id, nombre })).sort((a, b) =>
+      a.nombre.localeCompare(b.nombre, 'es')
+    );
+  }, [cortes, historial]);
 
-  const tercerosCxc = useMemo(() => listaTerceros(docsCxc), [docsCxc]);
-  const tercerosCxp = useMemo(() => listaTerceros(docsCxp), [docsCxp]);
+  const fechas = useMemo(
+    () => Array.from(new Set(cortes.map((c) => c.fecha))).sort((a, b) => b.localeCompare(a)),
+    [cortes]
+  );
 
-  const filtradosCxc = useMemo(() => filtrarPorNit(docsCxc, nitCxc, tercerosCxc), [docsCxc, nitCxc, tercerosCxc]);
-  const filtradosCxp = useMemo(() => filtrarPorNit(docsCxp, nitCxp, tercerosCxp), [docsCxp, nitCxp, tercerosCxp]);
+  /* La fecha seleccionada tiene que existir; si se borró un corte, cae a la más reciente. */
+  const fecha = fechas.includes(fechaSel) ? fechaSel : (fechas[0] ?? '');
 
-  function exportar(docs: Doc[]) {
+  const empresasScope = useMemo(
+    () => (scope === CONSOLIDADO ? empresas.map((e) => e.id) : [scope]),
+    [scope, empresas]
+  );
+
+  /**
+   * Cortes en pantalla: UNA fecha, las empresas del scope.
+   *
+   * La fecha única es deliberada: sumar cortes de meses distintos duplicaría
+   * los documentos que siguen abiertos en los dos. La evolución es lo único
+   * que cruza fechas, y lo hace sobre agregados.
+   */
+  const cortesVista = useMemo(
+    () => cortes.filter((c) => c.fecha === fecha && empresasScope.includes(c.empresaId)),
+    [cortes, fecha, empresasScope]
+  );
+
+  const multiempresa = cortesVista.length > 1;
+
+  /** Documentos de una cartera, ya marcados con su empresa y filtrados por anticipos. */
+  const docsDe = useCallback(
+    (tipo: Tipo): DocVista[] => {
+      const out: DocVista[] = [];
+      for (const c of cortesVista) {
+        const cartera = c.carteras[tipo];
+        if (!cartera) continue;
+        for (const d of aplicarAnticipos(cartera.docs, modo)) {
+          out.push({ ...d, empresaId: c.empresaId, empresaNombre: c.empresaNombre });
+        }
+      }
+      return out;
+    },
+    [cortesVista, modo]
+  );
+
+  const baseCxc = useMemo(() => docsDe('CXC'), [docsDe]);
+  const baseCxp = useMemo(() => docsDe('CXP'), [docsDe]);
+
+  const anticipos = useMemo(() => {
+    let c = 0;
+    let p = 0;
+    for (const corte of cortesVista) {
+      if (corte.carteras.CXC) c += totalDeGrupo(corte.carteras.CXC.docs, 'anticipo');
+      if (corte.carteras.CXP) p += totalDeGrupo(corte.carteras.CXP.docs, 'anticipo');
+    }
+    return { cxc: c, cxp: p };
+  }, [cortesVista]);
+
+  /** Aplica la selección (tramo + terceros) a una cartera. */
+  const aplicarSeleccion = useCallback(
+    (docs: DocVista[], tipo: Tipo): DocVista[] => {
+      let out = docs;
+      if (sel.tramo && sel.tipo === tipo) out = out.filter((d) => tramoDe(d, tramos).key === sel.tramo);
+      if (sel.nits.length) {
+        const set = new Set(sel.nits);
+        out = out.filter((d) => set.has(d.nit));
+      }
+      return out;
+    },
+    [sel, tramos]
+  );
+
+  const cxcSel = useMemo(() => aplicarSeleccion(baseCxc, 'CXC'), [baseCxc, aplicarSeleccion]);
+  const cxpSel = useMemo(() => aplicarSeleccion(baseCxp, 'CXP'), [baseCxp, aplicarSeleccion]);
+
+  const serieCxc = useMemo(() => serieMensual(historial, 'CXC', empresasScope), [historial, empresasScope]);
+  const serieCxp = useMemo(() => serieMensual(historial, 'CXP', empresasScope), [historial, empresasScope]);
+
+  const hayDatos = cortes.length > 0;
+  const hayHistorial = historial.length > 0;
+
+  /* ---------- acciones ---------- */
+  function alternarTramo(tipo: Tipo, key: string) {
+    setSel((s) => (s.tipo === tipo && s.tramo === key ? { ...s, tramo: null } : { ...s, tipo, tramo: key }));
+  }
+
+  function alternarTercero(tipo: Tipo, nit: string) {
+    if (!nit) return;
+    setSel((s) => {
+      if (s.nits.includes(nit)) return { ...s, tipo, nits: s.nits.filter((n) => n !== nit) };
+      if (s.nits.length >= MAX_TERCEROS) {
+        avisar(`Se pueden comparar hasta ${MAX_TERCEROS} terceros a la vez. Suelta uno primero.`, true);
+        return s;
+      }
+      return { ...s, tipo, nits: [...s.nits, nit] };
+    });
+  }
+
+  const nombrePorNit = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of [...baseCxc, ...baseCxp]) if (d.nit && !m.has(d.nit)) m.set(d.nit, d.nombre);
+    return m;
+  }, [baseCxc, baseCxp]);
+
+  function exportar(docs: DocVista[]) {
     const csv = aCsv(docs, tramos);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `cartera-${tipoDetalle.toLowerCase()}-${fechaCorte ?? 'sin-corte'}.csv`;
+    a.download = `cartera-${sel.tipo.toLowerCase()}-${fecha || 'sin-corte'}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     avisar(`${fmtNum(docs.length)} documentos exportados a CSV.`);
   }
 
-  function limpiar() {
-    setResultado(null);
-    setNitCxc('');
-    setNitCxp('');
-    try {
-      localStorage.removeItem(CLAVE_ALMACEN);
-    } catch {
-      /* nada que limpiar */
-    }
-    avisar('Datos borrados de este navegador.');
+  function descargarHistorial() {
+    const blob = new Blob([exportarHistorial(historial)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `historial-cartera-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    avisar(`Historial exportado: ${fmtNum(historial.length)} registros.`);
   }
 
+  async function cargarHistorial(file: File) {
+    try {
+      const texto = await file.text();
+      const nuevos = importarHistorial(texto);
+      const fundido = fundirHistorial(historial, nuevos);
+      setHistorial(fundido);
+      setDetalleDescartado(guardar(fundido, cortes));
+      avisar(`Historial importado: ${fmtNum(nuevos.length)} registros.`);
+    } catch (e) {
+      avisar(
+        e instanceof HistorialInvalidoError ? e.message : 'No se pudo leer el historial.',
+        true
+      );
+    }
+  }
+
+  function borrarTodo() {
+    setCortes([]);
+    setHistorial([]);
+    setAvisos([]);
+    setSel({ tipo: 'CXC', tramo: null, nits: [] });
+    limpiar();
+    avisar('Datos e historial borrados de este navegador.');
+  }
+
+  /* ---------- render ---------- */
   return (
     <div className="wrap">
-      {arrastrando && <div id="dropHint">Suelta el archivo para cargarlo</div>}
+      {arrastrando && <div id="dropHint">Suelta los archivos para cargarlos</div>}
 
       <div className="topbar">
         <div className="brand">
           <div className="mark" aria-hidden="true">$</div>
           <div>
             <h1>Cartera por edades</h1>
-            <div className="company">{empresa ?? 'Sin archivo cargado'}</div>
+            <div className="company">
+              {hayDatos ? etiquetaScope(scope, empresas) : 'Sin archivos cargados'}
+            </div>
           </div>
         </div>
 
         <div className="head-right">
           {hayDatos && (
             <>
-              <div className="scale-control">
-                <span className="sr-only" id="lblEscala">Escala de las cifras</span>
-                <div className="scale-toggle" role="group" aria-labelledby="lblEscala">
-                  {([1, 1000, 1000000] as Escala[]).map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className="scale-btn"
-                      aria-pressed={escala === s}
-                      onClick={() => setEscala(s)}
-                    >
-                      {s === 1 ? '$' : s === 1000 ? 'Miles' : 'Millones'}
-                    </button>
-                  ))}
-                </div>
+              <div className="scale-toggle" role="group" aria-label="Escala de las cifras">
+                {([1, 1000, 1000000] as Escala[]).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    className="scale-btn"
+                    aria-pressed={escala === s}
+                    onClick={() => setEscala(s)}
+                  >
+                    {s === 1 ? '$' : s === 1000 ? 'Miles' : 'Millones'}
+                  </button>
+                ))}
               </div>
-              <div className="stamp">{fechaCorte ? `Corte ${fmtDate(fechaCorte)}` : 'Sin corte'}</div>
+              <div className="stamp">{fecha ? `Corte ${fmtDate(fecha)}` : 'Sin corte'}</div>
             </>
           )}
           <button type="button" className="btn small" onClick={alternarTema} title="Cambiar tema">
             ◐ Tema
           </button>
-          <button type="button" className="btn primary" onClick={() => inputRef.current?.click()}>
-            ⇪ {hayDatos ? 'Cambiar archivo' : 'Cargar .xlsx'}
+          <button type="button" className="btn primary" onClick={() => inputRef.current?.click()} disabled={cargando}>
+            {cargando ? 'Leyendo…' : `⇪ ${hayDatos ? 'Cargar más archivos' : 'Cargar archivos .xlsx'}`}
           </button>
           <input
             ref={inputRef}
             type="file"
             accept=".xlsx,.xls,.xlsm"
+            multiple
             style={{ display: 'none' }}
             onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void procesar(f);
+              const fs = Array.from(e.target.files ?? []);
+              if (fs.length) void procesar(fs);
               e.target.value = '';
             }}
           />
@@ -235,164 +398,312 @@ export default function Page() {
 
       {!hayDatos ? (
         <>
-          <EmptyState onElegir={() => inputRef.current?.click()} />
-          {resultado && (
+          <EmptyState
+            onElegir={() => inputRef.current?.click()}
+            onImportarHistorial={() => importRef.current?.click()}
+            hayHistorial={hayHistorial}
+          />
+          {avisos.length > 0 && (
             <section style={{ marginTop: 28 }}>
-              <AvisosPanel avisos={resultado.avisos} />
+              <AvisosPanel avisos={avisos} />
             </section>
           )}
         </>
       ) : (
         <>
+          {/* ---------- qué se está viendo ---------- */}
+          <section>
+            <div className="section-label">Qué se está viendo</div>
+            <div className="card">
+              <div className="vista-grid">
+                <div className="field">
+                  <label className="field-label" htmlFor="fEmpresa">Empresa</label>
+                  <select id="fEmpresa" value={scope} onChange={(e) => setScope(e.target.value)}>
+                    <option value={CONSOLIDADO}>
+                      {empresas.length === 1 ? empresas[0].nombre : `Las ${empresas.length} empresas`}
+                    </option>
+                    {empresas.map((e) => (
+                      <option key={e.id} value={e.id}>{e.nombre}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label className="field-label" htmlFor="fCorte">Corte</label>
+                  <select id="fCorte" value={fecha} onChange={(e) => setFechaSel(e.target.value)}>
+                    {fechas.map((f) => (
+                      <option key={f} value={f}>{fmtDate(f)}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <span className="field-label">Anticipos</span>
+                  <div className="scale-toggle" role="group" aria-label="Tratamiento de anticipos">
+                    <button
+                      type="button" className="scale-btn" aria-pressed={modo === 'bruta'}
+                      onClick={() => setModo('bruta')}
+                      title="Solo las cuentas de cartera; los anticipos quedan aparte"
+                    >
+                      Cartera bruta
+                    </button>
+                    <button
+                      type="button" className="scale-btn" aria-pressed={modo === 'neta'}
+                      onClick={() => setModo('neta')}
+                      title="Descuenta los anticipos del total"
+                    >
+                      Neta
+                    </button>
+                  </div>
+                </div>
+
+                <div className="field vista-resumen">
+                  <span className="field-label">Cortes cargados</span>
+                  <span className="num">
+                    {fmtNum(cortes.length)} · {fmtNum(empresas.length)} empresa
+                    {empresas.length === 1 ? '' : 's'} · {fmtNum(new Set(historial.map((h) => h.mes)).size)} mes
+                    {new Set(historial.map((h) => h.mes)).size === 1 ? '' : 'es'} en el historial
+                  </span>
+                </div>
+              </div>
+
+              {modo === 'bruta' && (
+                <p className="nota-modo">
+                  <strong>Cartera bruta:</strong> solo las cuentas de cartera del PUC. Los anticipos
+                  ({fmtMoney(anticipos.cxc + anticipos.cxp, escala)}) van aparte y no rebajan estos totales.
+                </p>
+              )}
+
+              {(sel.tramo || sel.nits.length > 0) && (
+                <div className="seleccion-activa">
+                  <span className="field-label">Filtro activo</span>
+                  {sel.tramo && (
+                    <button type="button" className="filter-chip activo" onClick={() => setSel((s) => ({ ...s, tramo: null }))}>
+                      {sel.tipo === 'CXC' ? 'Por cobrar' : 'Por pagar'} ·{' '}
+                      {tramos.find((t) => t.key === sel.tramo)?.etiqueta} ✕
+                    </button>
+                  )}
+                  {sel.nits.map((n) => (
+                    <button key={n} type="button" className="filter-chip activo" onClick={() => alternarTercero(sel.tipo, n)}>
+                      {nombrePorNit.get(n) ?? n} ✕
+                    </button>
+                  ))}
+                  <button type="button" className="btn-reset" onClick={() => setSel({ tipo: sel.tipo, tramo: null, nits: [] })}>
+                    Quitar todo
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ---------- resumen ---------- */}
           <section>
             <div className="section-label">
               Resumen {NOTA_ESCALA[escala] && <>— {NOTA_ESCALA[escala]}</>}
             </div>
             <KpiGrid
-              docsCxc={docsCxc}
-              docsCxp={docsCxp}
+              docsCxc={cxcSel}
+              docsCxp={cxpSel}
+              anticiposCxc={anticipos.cxc}
+              anticiposCxp={anticipos.cxp}
+              modo={modo}
               tramos={tramos}
               escala={escala}
-              fechaCorte={fechaCorte}
-              fuente={resultado?.archivo ?? '—'}
             />
           </section>
 
+          {/* ---------- antigüedad ---------- */}
           <section>
             <div className="section-label-row">
-              <div className="section-label">Antigüedad de saldos por tramo</div>
+              <div className="section-label">Antigüedad de saldos por tramo — pulsa un tramo para filtrar el tablero</div>
               <TramoEditor umbrales={umbrales} onChange={(u) => setUmbrales(sanearUmbrales(u))} />
             </div>
             <div className="chart-grid">
-              {dsCxc && (
-                <div className="card">
-                  <div className="chart-title">
-                    <span className="dot" style={{ background: 'var(--cxc)' }} aria-hidden="true" />
-                    <h3>Por cobrar</h3>
-                    <span className="tot num">{fmtMoney(totalDe(filtradosCxc), escala)}</span>
-                    <input
-                      type="text"
-                      className="nit-select"
-                      list="listaCxc"
-                      value={nitCxc}
-                      placeholder="Filtrar por cliente o NIT…"
-                      aria-label="Filtrar por cliente o NIT"
-                      autoComplete="off"
-                      onChange={(e) => setNitCxc(e.target.value)}
+              {(['CXC', 'CXP'] as Tipo[]).map((tipo) => {
+                const docs = tipo === 'CXC' ? cxcSel : cxpSel;
+                const base = tipo === 'CXC' ? baseCxc : baseCxp;
+                if (!base.length) return null;
+                return (
+                  <div className="card" key={tipo}>
+                    <div className="chart-title">
+                      <span className="dot" style={{ background: tipo === 'CXC' ? 'var(--cxc)' : 'var(--cxp)' }} aria-hidden="true" />
+                      <h3>{tipo === 'CXC' ? 'Cuentas por cobrar' : 'Cuentas por pagar'}</h3>
+                      <span className="tot num">{fmtMoney(totalDe(docs), escala)}</span>
+                    </div>
+                    <div className="chart-scope">
+                      {fmtNum(docs.length)}
+                      {docs.length !== base.length && ` de ${fmtNum(base.length)}`} documentos
+                    </div>
+                    <AgingChart
+                      tipo={tipo}
+                      docs={docs}
+                      tramos={tramos}
+                      escala={escala}
+                      tramoActivo={sel.tipo === tipo ? sel.tramo : null}
+                      onTramo={alternarTramo}
                     />
-                    <datalist id="listaCxc">
-                      {tercerosCxc.map((t) => (
-                        <option key={t.nit + t.nombre} value={`${t.nombre} — NIT ${t.nit}`} />
-                      ))}
-                    </datalist>
                   </div>
-                  <div className="chart-scope">
-                    {nitCxc
-                      ? `Mostrando ${fmtNum(filtradosCxc.length)} de ${fmtNum(docsCxc.length)} documentos`
-                      : `${fmtNum(docsCxc.length)} documentos · ${fmtNum(tercerosCxc.length)} clientes`}
-                  </div>
-                  <AgingChart tipo="CXC" docs={filtradosCxc} tramos={tramos} escala={escala} />
-                </div>
-              )}
-              {dsCxp && (
-                <div className="card">
-                  <div className="chart-title">
-                    <span className="dot" style={{ background: 'var(--cxp)' }} aria-hidden="true" />
-                    <h3>Por pagar</h3>
-                    <span className="tot num">{fmtMoney(totalDe(filtradosCxp), escala)}</span>
-                    <input
-                      type="text"
-                      className="nit-select"
-                      list="listaCxp"
-                      value={nitCxp}
-                      placeholder="Filtrar por proveedor o NIT…"
-                      aria-label="Filtrar por proveedor o NIT"
-                      autoComplete="off"
-                      onChange={(e) => setNitCxp(e.target.value)}
-                    />
-                    <datalist id="listaCxp">
-                      {tercerosCxp.map((t) => (
-                        <option key={t.nit + t.nombre} value={`${t.nombre} — NIT ${t.nit}`} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div className="chart-scope">
-                    {nitCxp
-                      ? `Mostrando ${fmtNum(filtradosCxp.length)} de ${fmtNum(docsCxp.length)} documentos`
-                      : `${fmtNum(docsCxp.length)} documentos · ${fmtNum(tercerosCxp.length)} proveedores`}
-                  </div>
-                  <AgingChart tipo="CXP" docs={filtradosCxp} tramos={tramos} escala={escala} />
-                </div>
-              )}
+                );
+              })}
             </div>
           </section>
 
+          {/* ---------- evolución ---------- */}
           <section>
             <details className="collapsible" open>
+              <summary className="collapsible-summary section-label">
+                <span className="chev" aria-hidden="true">▾</span>
+                Evolución mensual · {fmtNum(new Set(historial.map((h) => h.mes)).size)} mes
+                {new Set(historial.map((h) => h.mes)).size === 1 ? '' : 'es'} acumulado
+                {new Set(historial.map((h) => h.mes)).size === 1 ? '' : 's'}
+              </summary>
+              <div className="collapsible-body">
+                <div className="card">
+                  {/*
+                    Las DOS gráficas, cada una con su propio eje. Por cobrar
+                    anda en cientos de millones y por pagar en miles: un eje
+                    compartido dejaría la primera pegada al piso.
+                  */}
+                  <EvolucionChart
+                    titulo="Cuentas por cobrar"
+                    serie={serieCxc}
+                    color="var(--cxc)"
+                    modo={modo}
+                    empresasEsperadas={empresasScope.length}
+                  />
+                  <EvolucionChart
+                    titulo="Cuentas por pagar"
+                    serie={serieCxp}
+                    color="var(--cxp)"
+                    modo={modo}
+                    empresasEsperadas={empresasScope.length}
+                  />
+                  <div className="historial-acciones">
+                    <button type="button" className="btn small" onClick={descargarHistorial} disabled={!hayHistorial}>
+                      ⤓ Exportar historial
+                    </button>
+                    <button type="button" className="btn small" onClick={() => importRef.current?.click()}>
+                      ⇪ Importar historial
+                    </button>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      El historial vive en este navegador. Expórtalo para verlo en otro equipo.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          {/* ---------- cuadre ---------- */}
+          <section>
+            <details className="collapsible">
               <summary className="collapsible-summary section-label">
                 <span className="chev" aria-hidden="true">▾</span>
                 Cuadre contra el balance
               </summary>
               <div className="collapsible-body">
                 <div className="cuadre-grid">
-                  {dsCxc && <CuadrePanel ds={dsCxc} cuadre={calcularCuadre(dsCxc)} escala={escala} />}
-                  {dsCxp && <CuadrePanel ds={dsCxp} cuadre={calcularCuadre(dsCxp)} escala={escala} />}
+                  {cortesVista.flatMap((c) =>
+                    (['CXC', 'CXP'] as Tipo[]).map((tipo) => {
+                      const cartera = c.carteras[tipo];
+                      if (!cartera) return null;
+                      return (
+                        <CuadrePanel
+                          key={c.id + tipo}
+                          ds={cartera}
+                          cuadre={calcularCuadre(cartera)}
+                          escala={escala}
+                          titulo={`${multiempresa ? c.empresaNombre + ' · ' : ''}${
+                            tipo === 'CXC' ? 'Por cobrar' : 'Por pagar'
+                          }`}
+                        />
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </details>
           </section>
 
+          {/* ---------- concentración ---------- */}
           <section>
-            <details className="collapsible" open>
+            <details className="collapsible">
               <summary className="collapsible-summary section-label">
                 <span className="chev" aria-hidden="true">▾</span>
-                Concentración de la cartera
+                Mayores saldos — pulsa un tercero para compararlo
               </summary>
               <div className="collapsible-body">
                 <div className="chart-grid">
-                  {dsCxc && <TopTable tipo="CXC" docs={docsCxc} tramos={tramos} escala={escala} />}
-                  {dsCxp && <TopTable tipo="CXP" docs={docsCxp} tramos={tramos} escala={escala} />}
+                  {baseCxc.length > 0 && (
+                    <TopTable tipo="CXC" docs={cxcSel} tramos={tramos} escala={escala} nitsActivos={sel.nits} onTercero={alternarTercero} />
+                  )}
+                  {baseCxp.length > 0 && (
+                    <TopTable tipo="CXP" docs={cxpSel} tramos={tramos} escala={escala} nitsActivos={sel.nits} onTercero={alternarTercero} />
+                  )}
                 </div>
               </div>
             </details>
           </section>
 
+          {/* ---------- detalle ---------- */}
           <section>
-            <details className="collapsible" open>
+            <details className="collapsible">
               <summary className="collapsible-summary section-label">
                 <span className="chev" aria-hidden="true">▾</span>
-                Detalle por tercero
+                Detalle de cartera
               </summary>
               <div className="collapsible-body">
                 <DetailTable
-                  tipo={tipoDetalle}
-                  onTipo={setTipoDetalle}
-                  docsCxc={docsCxc}
-                  docsCxp={docsCxp}
+                  tipo={sel.tipo}
+                  onTipo={(t) => setSel((s) => ({ ...s, tipo: t, tramo: null }))}
+                  docs={sel.tipo === 'CXC' ? cxcSel : cxpSel}
                   tramos={tramos}
                   escala={escala}
+                  multiempresa={multiempresa}
                   onExportar={exportar}
                 />
               </div>
             </details>
           </section>
 
-          {resultado && (
+          {avisos.length > 0 && (
             <section>
-              <AvisosPanel avisos={resultado.avisos} />
+              <AvisosPanel avisos={avisos} />
             </section>
+          )}
+
+          {detalleDescartado && (
+            <div className="aviso aviso-warn" style={{ marginBottom: 20 }}>
+              <span className="tag">Almacenamiento</span>
+              <span>
+                El detalle de los cortes no cupo en este navegador, así que solo se guardó el historial mensual.
+                La gráfica de evolución se conserva; para volver a ver el detalle, suelta otra vez los archivos.
+              </span>
+            </div>
           )}
 
           <footer className="pie">
             <span>
-              Fuente: {resultado?.archivo} · procesado en este navegador, sin enviarse a ningún servidor.
+              {cortesVista.map((c) => c.archivo).join(" · ") || "—"} — procesados en este navegador, sin enviarse a ningún servidor.
             </span>
-            <button type="button" className="btn-reset" onClick={limpiar}>
-              Borrar los datos de este navegador
+            <button type="button" className="btn-reset" onClick={borrarTodo}>
+              Borrar datos e historial de este navegador
             </button>
           </footer>
         </>
       )}
+
+      <input
+        ref={importRef}
+        type="file"
+        accept=".json"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void cargarHistorial(f);
+          e.target.value = '';
+        }}
+      />
 
       {toast && (
         <div className={`toast${toast.err ? ' err' : ''}`} role="status" aria-live="polite">
@@ -401,36 +712,4 @@ export default function Page() {
       )}
     </div>
   );
-}
-
-/* ---------------- utilidades locales ---------------- */
-
-interface Entrada {
-  nit: string;
-  nombre: string;
-}
-
-function listaTerceros(docs: Doc[]): Entrada[] {
-  const mapa = new Map<string, string>();
-  for (const d of docs) if (d.nit && !mapa.has(d.nit)) mapa.set(d.nit, d.nombre);
-  return Array.from(mapa, ([nit, nombre]) => ({ nit, nombre })).sort((a, b) =>
-    a.nombre.localeCompare(b.nombre, 'es')
-  );
-}
-
-/** Acepta "NOMBRE — NIT 123", un NIT suelto o parte del nombre. */
-function filtrarPorNit(docs: Doc[], valor: string, entradas: Entrada[]): Doc[] {
-  const v = valor.trim();
-  if (!v) return docs;
-
-  const m = v.match(/NIT\s+(\S+)\s*$/i);
-  if (m) {
-    const nit = m[1];
-    if (entradas.some((e) => e.nit === nit)) return docs.filter((d) => d.nit === nit);
-  }
-  if (entradas.some((e) => e.nit === v)) return docs.filter((d) => d.nit === v);
-
-  const q = v.toLowerCase();
-  const parciales = docs.filter((d) => d.nombre.toLowerCase().includes(q) || d.nit.includes(q));
-  return parciales.length ? parciales : docs;
 }

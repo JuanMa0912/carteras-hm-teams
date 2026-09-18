@@ -1,7 +1,7 @@
 'use client';
 
 import type { Cuadre } from '@/lib/aggregate';
-import type { Dataset } from '@/lib/types';
+import type { Cartera } from '@/lib/types';
 import { fmtMoney, type Escala } from '@/lib/format';
 
 /**
@@ -24,10 +24,12 @@ export default function CuadrePanel({
   ds,
   cuadre,
   escala,
+  titulo,
 }: {
-  ds: Dataset;
+  ds: Cartera;
   cuadre: Cuadre;
   escala: Escala;
+  titulo: string;
 }) {
   const v = VEREDICTO[cuadre.estado];
   const esCxc = ds.tipo === 'CXC';
@@ -36,7 +38,7 @@ export default function CuadrePanel({
     <div className="card">
       <div className="cuadre-head">
         <span className="dot" style={{ background: esCxc ? 'var(--cxc)' : 'var(--cxp)' }} />
-        <h3>{esCxc ? 'Por cobrar' : 'Por pagar'}</h3>
+        <h3>{titulo}</h3>
         <span className={`verdict ${cuadre.estado}`}>
           <span aria-hidden="true">{v.icono}</span>
           {v.txt}

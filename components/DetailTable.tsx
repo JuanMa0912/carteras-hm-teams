@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import type { Doc, Tipo, TramoDef } from '@/lib/types';
+import type { DocVista, Tipo, TramoDef } from '@/lib/types';
 import { agruparPorTercero, tramoDe, type Tercero } from '@/lib/aggregate';
 import { fmtDate, fmtMoney, fmtNum, norm, type Escala } from '@/lib/format';
 import Chip from './Chip';
@@ -10,37 +10,39 @@ type Orden = 'nombre' | 'docs' | 'tramo' | 'saldo';
 
 const TAM_PAGINA = 40;
 
+/**
+ * Detalle por tercero, agrupado y desplegable.
+ *
+ * Lee la selección del tablero —cartera, tramo y terceros— en vez de tener
+ * filtros propios. Antes había tres filtros sueltos que no se hablaban entre
+ * sí y se podía quedar viendo el tramo de una cartera con el detalle de la
+ * otra.
+ */
 interface Props {
   tipo: Tipo;
   onTipo: (t: Tipo) => void;
-  docsCxc: Doc[];
-  docsCxp: Doc[];
+  docs: DocVista[];
   tramos: TramoDef[];
   escala: Escala;
-  onExportar: (docs: Doc[]) => void;
+  /** `true` cuando hay más de una empresa en pantalla. */
+  multiempresa: boolean;
+  onExportar: (docs: DocVista[]) => void;
 }
 
-export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, escala, onExportar }: Props) {
-  const [filtro, setFiltro] = useState<string>('all');
+export default function DetailTable({ tipo, onTipo, docs, tramos, escala, multiempresa, onExportar }: Props) {
   const [busqueda, setBusqueda] = useState('');
   const [orden, setOrden] = useState<Orden>('saldo');
   const [dir, setDir] = useState<'asc' | 'desc'>('desc');
   const [pagina, setPagina] = useState(1);
-  const [abiertos, setAbiertos] = useState<Record<string, Set<string>>>({ CXC: new Set(), CXP: new Set() });
-
-  const base = tipo === 'CXC' ? docsCxc : docsCxp;
+  const [abiertos, setAbiertos] = useState<Record<Tipo, Set<string>>>({ CXC: new Set(), CXP: new Set() });
 
   const filtrados = useMemo(() => {
-    let out = base;
-    if (filtro !== 'all') out = out.filter((d) => tramoDe(d, tramos).key === filtro);
-    if (busqueda.trim()) {
-      const q = norm(busqueda);
-      out = out.filter(
-        (d) => norm(d.nombre).includes(q) || norm(d.nit).includes(q) || norm(d.documento).includes(q)
-      );
-    }
-    return out;
-  }, [base, filtro, busqueda, tramos]);
+    if (!busqueda.trim()) return docs;
+    const q = norm(busqueda);
+    return docs.filter(
+      (d) => norm(d.nombre).includes(q) || norm(d.nit).includes(q) || norm(d.documento).includes(q)
+    );
+  }, [docs, busqueda]);
 
   const grupos = useMemo(() => {
     const g = agruparPorTercero(filtrados, tramos);
@@ -77,22 +79,34 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
     }
   }
 
-  function cambiarTipo(t: Tipo) {
-    onTipo(t);
-    setPagina(1);
-  }
-
   const flecha = (k: Orden) => (orden === k ? (dir === 'asc' ? ' ▲' : ' ▼') : '');
+  const colSpan = multiempresa ? 8 : 7;
 
   return (
     <div className="card">
       <div className="toolbar">
         <div className="toolbar-left">
           <div className="tabs" role="group" aria-label="Tipo de cartera">
-            <button type="button" className="tab" aria-pressed={tipo === 'CXC'} onClick={() => cambiarTipo('CXC')}>
+            <button
+              type="button"
+              className="tab"
+              aria-pressed={tipo === 'CXC'}
+              onClick={() => {
+                onTipo('CXC');
+                setPagina(1);
+              }}
+            >
               Por cobrar
             </button>
-            <button type="button" className="tab" aria-pressed={tipo === 'CXP'} onClick={() => cambiarTipo('CXP')}>
+            <button
+              type="button"
+              className="tab"
+              aria-pressed={tipo === 'CXP'}
+              onClick={() => {
+                onTipo('CXP');
+                setPagina(1);
+              }}
+            >
               Por pagar
             </button>
           </div>
@@ -111,22 +125,6 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
             ⤓ Exportar CSV
           </button>
         </div>
-        <div className="filters" role="group" aria-label="Filtrar por tramo">
-          {[{ key: 'all', etiqueta: 'Todos' }, ...tramos.map((t) => ({ key: t.key, etiqueta: t.etiqueta }))].map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              className="filter-chip"
-              aria-pressed={filtro === c.key}
-              onClick={() => {
-                setFiltro(c.key);
-                setPagina(1);
-              }}
-            >
-              {c.etiqueta}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="table-scroll">
@@ -136,6 +134,7 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
               <th className="sortable" onClick={() => ordenar('nombre')}>
                 Tercero<span className="arrow">{flecha('nombre')}</span>
               </th>
+              {multiempresa && <th>Empresa</th>}
               <th>NIT</th>
               <th className="sortable" onClick={() => ordenar('docs')}>
                 Documento<span className="arrow">{flecha('docs')}</span>
@@ -153,13 +152,14 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
           <tbody>
             {visibles.length === 0 && (
               <tr>
-                <td colSpan={7} className="empty">
+                <td colSpan={colSpan} className="empty">
                   No hay registros que coincidan con el filtro.
                 </td>
               </tr>
             )}
             {visibles.map((g: Tercero) => {
               const abierto = abiertosTipo.has(g.key);
+              const empresas = Array.from(new Set((g.docs as DocVista[]).map((d) => d.empresaNombre)));
               return [
                 <tr
                   key={g.key}
@@ -174,9 +174,16 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
                   }}
                 >
                   <td>
-                    <span className="chevron" aria-hidden="true">{abierto ? '▾' : '▸'}</span>
+                    <span className="chevron" aria-hidden="true">
+                      {abierto ? '▾' : '▸'}
+                    </span>
                     <span className="name">{g.nombre}</span>
                   </td>
+                  {multiempresa && (
+                    <td className="muted" style={{ fontSize: 12 }}>
+                      {empresas.length === 1 ? empresas[0] : `${empresas.length} empresas`}
+                    </td>
+                  )}
                   <td className="num">{g.nit || '—'}</td>
                   <td className="num muted">
                     {fmtNum(g.docs.length)} documento{g.docs.length === 1 ? '' : 's'}
@@ -187,25 +194,29 @@ export default function DetailTable({ tipo, onTipo, docsCxc, docsCxp, tramos, es
                   <td className="amt num">{fmtMoney(g.saldo, escala)}</td>
                 </tr>,
                 ...(abierto
-                  ? g.docs
+                  ? (g.docs as DocVista[])
                       .slice()
                       .sort((a, b) => Math.abs(b.saldo) - Math.abs(a.saldo))
-                      .map((d, i) => {
-                        const t = tramoDe(d, tramos);
-                        return (
-                          <tr className="child-row" key={g.key + '|' + d.documento + '|' + i}>
-                            <td />
-                            <td />
-                            <td className="child-doc">↳ {d.documento || '(sin documento)'}</td>
-                            <td className="num">{fmtDate(d.fechaVcto)}</td>
-                            <td className="days num">{Math.round(d.dVenc)}</td>
-                            <td>
-                              <Chip tramo={t} />
+                      .map((d, i) => (
+                        <tr className="child-row" key={g.key + '|' + d.documento + '|' + i}>
+                          <td />
+                          {multiempresa && (
+                            <td className="muted" style={{ fontSize: 11.5 }}>
+                              {d.empresaNombre}
                             </td>
-                            <td className="amt num">{fmtMoney(d.saldo, escala)}</td>
-                          </tr>
-                        );
-                      })
+                          )}
+                          <td className="muted" style={{ fontSize: 11.5 }}>
+                            {d.cuenta}
+                          </td>
+                          <td className="child-doc">↳ {d.documento || '(sin documento)'}</td>
+                          <td className="num">{fmtDate(d.fechaVcto)}</td>
+                          <td className="days num">{Math.round(d.dVenc)}</td>
+                          <td>
+                            <Chip tramo={tramoDe(d, tramos)} />
+                          </td>
+                          <td className="amt num">{fmtMoney(d.saldo, escala)}</td>
+                        </tr>
+                      ))
                   : []),
               ];
             })}

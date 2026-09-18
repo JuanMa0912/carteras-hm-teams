@@ -7,21 +7,29 @@ import { fmtMoney, fmtPct, type Escala } from '@/lib/format';
 import Chip from './Chip';
 
 /**
- * Concentración de la cartera: los diez terceros de mayor saldo, con su peor
- * tramo y qué porcentaje del total representan. La columna de participación es
- * la que responde la pregunta que importa — si cinco clientes son el 80 % de la
- * cartera, el riesgo no está repartido.
+ * Concentración de la cartera: los diez terceros de mayor saldo.
+ *
+ * Respeta la selección del tablero: si se pulsó «181–360 días» en por pagar,
+ * esta lista es la de ESE tramo, no la general. Un top que ignora el filtro
+ * que acabas de poner es peor que no tenerlo.
+ *
+ * Pulsar un tercero lo agrega a la comparación (hasta el tope) y lo aplica al
+ * resto del tablero.
  */
 export default function TopTable({
   tipo,
   docs,
   tramos,
   escala,
+  nitsActivos,
+  onTercero,
 }: {
   tipo: Tipo;
   docs: Doc[];
   tramos: TramoDef[];
   escala: Escala;
+  nitsActivos: string[];
+  onTercero: (tipo: Tipo, nit: string) => void;
 }) {
   const { lista, total } = useMemo(
     () => ({ lista: topTerceros(docs, tramos, 10), total: totalDe(docs) }),
@@ -57,22 +65,38 @@ export default function TopTable({
             {lista.length === 0 && (
               <tr>
                 <td colSpan={5} className="empty">
-                  Sin registros
+                  Sin registros para este filtro
                 </td>
               </tr>
             )}
-            {lista.map((g, i) => (
-              <tr key={g.key}>
-                <td className="rank num">{i + 1}</td>
-                <td>
-                  <div className="name">{g.nombre}</div>
-                  <div className="nit">NIT {g.nit || '—'}</div>
-                </td>
-                <td className="amt num">{fmtMoney(g.saldo, escala)}</td>
-                <td className="amt num muted">{total ? fmtPct((g.saldo / total) * 100) : '—'}</td>
-                <td>{g.peor ? <Chip tramo={g.peor} /> : '—'}</td>
-              </tr>
-            ))}
+            {lista.map((g, i) => {
+              const activo = nitsActivos.includes(g.nit);
+              return (
+                <tr
+                  key={g.key}
+                  className={`fila-tercero${activo ? ' activo' : ''}`}
+                  onClick={() => onTercero(tipo, g.nit)}
+                  tabIndex={0}
+                  aria-pressed={activo}
+                  title={activo ? 'Quitar de la comparación' : 'Agregar a la comparación'}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onTercero(tipo, g.nit);
+                    }
+                  }}
+                >
+                  <td className="rank num">{i + 1}</td>
+                  <td>
+                    <div className="name">{g.nombre}</div>
+                    <div className="nit">NIT {g.nit || '—'}</div>
+                  </td>
+                  <td className="amt num">{fmtMoney(g.saldo, escala)}</td>
+                  <td className="amt num muted">{total ? fmtPct((g.saldo / total) * 100) : '—'}</td>
+                  <td>{g.peor ? <Chip tramo={g.peor} /> : '—'}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

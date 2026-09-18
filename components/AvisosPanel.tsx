@@ -23,7 +23,7 @@ export default function AvisosPanel({ avisos }: { avisos: Aviso[] }) {
         <div className="avisos">
           {avisos.map((a, i) => (
             <div key={i} className={`aviso ${a.nivel === 'aviso' ? 'aviso-warn' : a.nivel}`}>
-              <span className="tag">{ETIQUETA[a.nivel]}{a.hoja ? ` · ${a.hoja}` : ''}</span>
+              <span className="tag">{ETIQUETA[a.nivel]}{a.archivo ? ` · ${a.archivo}` : ''}{a.hoja ? ` › ${a.hoja}` : ''}</span>
               <span>{a.mensaje}</span>
             </div>
           ))}

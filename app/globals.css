@@ -460,3 +460,113 @@ footer.pie {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* =====================================================================
+   Añadidos: evolución mensual, barras-control y selectores de vista
+   ===================================================================== */
+
+/* ---------- barras de antigüedad como control ---------- */
+.bar-row {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 3px 4px;
+}
+.bar-row:hover { background: var(--surface-2); }
+.bar-row.activo { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--ink); }
+.bar-track { display: block; }
+.bar-fill { display: block; }
+.tip { display: flex; flex-direction: column; gap: 1px; }
+.tip-l { display: block; }
+
+/* ---------- selectores de vista ---------- */
+.vista-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px 18px; align-items: end;
+}
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.field select { width: 100%; }
+.vista-resumen { justify-content: flex-end; }
+.vista-resumen .num { font-size: 12.5px; color: var(--ink-2); }
+
+.nota-modo {
+  margin: 16px 0 0; padding: 10px 13px; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-size: 12.5px; line-height: 1.55; color: var(--ink-2);
+}
+
+.seleccion-activa {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--grid);
+}
+.filter-chip.activo { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.fila-tercero { cursor: pointer; }
+.fila-tercero:hover { background: var(--surface-2); }
+.fila-tercero.activo td { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--ink); }
+
+/* ---------- gráfica de evolución ---------- */
+.grafica { margin: 0; position: relative; }
+.grafica + .grafica { margin-top: 26px; padding-top: 26px; border-top: 1px solid var(--grid); }
+.grafica-cab { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.grafica-cab h3 { font-size: 15px; }
+.grafica-unidad {
+  margin-left: auto; font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.grafica-svg { width: 100%; height: auto; display: block; overflow: visible; }
+
+/* Rejilla y ejes: 1px SÓLIDO y recesivo. Nunca punteado. */
+.eje-rejilla { stroke: var(--grid); stroke-width: 1; }
+.eje-cero { stroke: var(--baseline); stroke-width: 1; }
+.eje-marca {
+  font-family: var(--font-mono), monospace; font-size: 11px;
+  font-variant-numeric: tabular-nums; fill: var(--ink-muted);
+}
+
+/*
+ * El texto NO lleva el color de la serie: eso lo carga la barra. Los valores
+ * van en tinta secundaria y el mes del corte en tinta plena, que es el único
+ * énfasis del gráfico.
+ */
+.grafica-valor {
+  font-family: var(--font-mono), monospace; font-size: 11.5px;
+  font-variant-numeric: tabular-nums; fill: var(--ink-2);
+}
+.grafica-valor.fuerte { fill: var(--ink); font-weight: 600; }
+.grafica-mes { font-size: 11px; fill: var(--ink-muted); }
+.grafica-mes.fuerte { fill: var(--ink); font-weight: 600; }
+.grafica-delta {
+  font-family: var(--font-mono), monospace; font-size: 10.5px;
+  font-variant-numeric: tabular-nums; fill: var(--ink-muted);
+}
+.grafica-svg g { cursor: default; }
+.grafica-tip {
+  position: absolute; top: 0; right: 0;
+  background: var(--ink); color: var(--page);
+  font-size: 12px; line-height: 1.5; padding: 8px 12px; border-radius: 7px;
+  box-shadow: var(--shadow); pointer-events: none; max-width: 340px;
+}
+.grafica-tip strong { font-weight: 600; }
+.grafica-tip-aviso { color: var(--baseline); margin-top: 3px; }
+.grafica-nota, .grafica-vacia {
+  margin: 12px 0 0; font-size: 12.5px; color: var(--ink-muted); line-height: 1.55;
+}
+
+.historial-acciones {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--grid);
+}
+
+@media (max-width: 720px) {
+  .vista-grid { grid-template-columns: 1fr; }
+  .grafica-tip { position: static; margin-top: 10px; max-width: none; }
+}

@@ -1,64 +1,86 @@
 # Estándar del archivo de cartera por edades
 
 Este documento define qué debe traer un archivo `.xlsx` para que el tablero lo
-lea. Está escrito para quien genera el reporte (contabilidad / TI), no para quien
-programa.
+lea. Está escrito para quien genera el reporte (contabilidad / TI), no para
+quien programa.
 
-La regla de fondo es una sola: **el tablero se adapta al archivo, no al revés**,
-pero necesita poder identificar dos cosas sin ambigüedad — de quién es el saldo y
-cuánto es.
+La regla de fondo: **el tablero se adapta al archivo, no al revés**, pero
+necesita poder responder sin ambigüedad cuatro preguntas — de qué empresa es, a
+qué fecha, de quién es el saldo y cuánto es.
 
 ---
 
 ## 1. Requisito mínimo
 
-Una hoja se procesa si tiene una fila de cabecera con, al menos:
+Una hoja se procesa si tiene:
 
-| Concepto | Nombres de columna aceptados |
+| Qué | Dónde | Obligatorio |
+|---|---|---|
+| **Nombre de la empresa** | primera columna de la franja de encabezado (celda A1 o la primera fila con texto en la columna A) | Sí |
+| **Fecha de corte** | una celda con el texto `fecha corte` y la fecha a su derecha | Sí |
+| **Nombre del tercero** | columna de la fila de cabecera | Sí |
+| **Saldo** | columna de la fila de cabecera | Sí |
+
+Nombres de columna aceptados:
+
+| Concepto | Nombres aceptados |
 |---|---|
-| **Nombre del tercero** | `proveedor`, `cliente`, `tercero`, `razon social`, `nombre`, `nombre tercero`, `descripcion`, `beneficiario` |
-| **Saldo** | `saldo`, `valor`, `saldo total`, `saldo cartera`, `saldo_total`, `valor saldo` |
+| Nombre del tercero | `proveedor`, `cliente`, `tercero`, `razon social`, `nombre`, `nombre tercero`, `descripcion`, `beneficiario` |
+| Saldo | `saldo`, `valor`, `saldo total`, `saldo cartera`, `saldo_total`, `valor saldo` |
 
-Si falta cualquiera de las dos, la hoja **no se procesa** y el tablero muestra un
-error que dice qué columnas sí encontró y cuáles no reconoció. Nunca falla en
-silencio.
+Si falta cualquiera de las cuatro, la hoja **no se procesa** y el tablero
+muestra un error que dice qué encontró y qué no. Nunca falla en silencio.
 
 La comparación ignora mayúsculas, tildes y espacios de más: `Proveedor`,
 `PROVEEDOR` y `proveedor ` son el mismo nombre.
+
+> ### ⚠ De dónde se lee el nombre de la empresa
+>
+> **Siempre de la primera columna.** Nunca de la celda que está junto a
+> `fecha corte`.
+>
+> El generador del ERP escribe ahí **«Merkmios» en todos los informes**, sean de
+> la empresa que sean. Comprobado el 18-sep-2026 con los tres informes al
+> 31-ago: los de Mercamio y Comercializadora Floralia también dicen «Merkmios»
+> en esa celda. Si alguna vez hay que tocar esta parte del código, apoyarse en
+> esa celda juntaría las tres empresas bajo un mismo nombre sin que nada avise.
+>
+> Consecuencia práctica para quien genera el informe: **la celda A1 tiene que
+> traer el nombre correcto de la empresa.** Es lo único que la distingue.
 
 ---
 
 ## 2. Columnas opcionales
 
-Cada una mejora el análisis; ninguna es obligatoria.
-
 | Concepto | Nombres aceptados | Para qué sirve |
 |---|---|---|
-| Cuenta contable | `cuenta_contable`, `cuenta contable`, `cuenta`, `cta` | Deducir si la hoja es por cobrar o por pagar cuando el nombre de la hoja no lo dice |
-| NIT | `nit`, `identificacion`, `cedula`, `nit/cc`, `id tercero` | Agrupar documentos del mismo tercero y permitir la búsqueda |
+| Cuenta contable | `cuenta_contable`, `cuenta contable`, `cuenta`, `cta` | **Separa la cartera de los anticipos.** Ver §4 |
+| NIT | `nit`, `identificacion`, `cedula`, `nit/cc`, `id tercero` | Agrupar documentos del mismo tercero y comparar terceros entre empresas |
 | Centro de operación | `c.o`, `co`, `centro operacion`, `sucursal` | Referencia |
 | Documento | `documento`, `doc`, `factura`, `nro documento` | Identificar cada movimiento y buscarlo |
 | Fecha del documento | `fecha_dcto`, `fecha dcto`, `fecha documento` | Referencia |
 | Fecha de vencimiento | `fecha_vcto`, `fecha vcto`, `fecha vencimiento` | Mostrar el vencimiento y calcular días si no vienen |
 | Días vencidos | `d_venc`, `dias vencidos`, `edad`, `dias` | Clasificar cada documento en su tramo |
 
-> **Sobre los días vencidos.** Si la columna no existe pero sí hay fecha de
-> vencimiento *y* fecha de corte, el tablero calcula los días contra el corte y lo
-> reporta como nota. Si no hay ninguna de las dos, todos los documentos caen en el
-> primer tramo y el análisis de antigüedad deja de ser confiable.
+> **Sobre los días vencidos.** Se toman de la columna del informe: es la cifra
+> con la que el propio ERP armó sus tramos, y recalcularla contra el corte daría
+> diferencias de un día que nadie sabría explicar. Si la columna no existe pero
+> sí hay fecha de vencimiento, se calcula contra el corte y se reporta como
+> nota. Si no hay ninguna de las dos, todos los documentos caen en el primer
+> tramo y el análisis de antigüedad deja de ser confiable.
 
 ---
 
 ## 3. Columnas de tramo
 
-El tablero reconoce automáticamente cualquier cabecera con estas formas:
+Se reconoce automáticamente cualquier cabecera con estas formas:
 
 - `Hasta 1 a 30 dias` → tramo 1 a 30
 - `31 a 90 dias` → tramo 31 a 90
 - `Mas de 360 dias` → tramo de 361 en adelante
 
-Es decir: **no importa cuáles sean los cortes**. Si el reporte usa 15 / 45 / 90 /
-180, el tablero lee esos tramos tal cual para el cuadre.
+**No importa cuáles sean los cortes.** Si el reporte usa 15 / 45 / 90 / 180, el
+tablero lee esos tramos tal cual para el cuadre.
 
 Estas columnas se usan **solo para verificar** que el archivo es internamente
 consistente. Las barras del tablero se recalculan siempre desde los días
@@ -66,7 +88,37 @@ vencidos, que es lo que permite mover los umbrales en pantalla.
 
 ---
 
-## 4. Bloque de encabezado (cuadre contable)
+## 4. Cartera bruta y anticipos — lo que más puede dañar las cifras
+
+El tablero separa cada fila en dos grupos según el primer dígito de la cuenta
+contable (PUC):
+
+| Cartera | Grupo principal | Grupo anticipo |
+|---|---|---|
+| Por cobrar | cuentas `1x` (clientes, otras CxC) | cuentas `2x` (anticipos de clientes) |
+| Por pagar | cuentas `2x` (proveedores, acreedores) | cuentas `1x` (anticipos a proveedores) |
+
+**Por defecto el tablero muestra la cartera BRUTA**: solo el grupo principal.
+Los anticipos van aparte, en su propia casilla, y hay un interruptor para
+netearlos.
+
+Por qué importa, medido sobre los informes al 31-ago-2026:
+
+| Empresa | CxP bruta | Anticipos | CxP neta | Diferencia |
+|---|---|---|---|---|
+| Merkmios | 11.789 MM | −476 MM | 11.313 MM | 4,0 % |
+| **Mercamio** | **23.607 MM** | **−6.171 MM** | **17.436 MM** | **26,1 %** |
+| Comercializadora Floralia | 15.421 MM | −1.873 MM | 13.549 MM | 12,1 % |
+
+Un tablero que suma todo a ciegas mostraría 6.171 millones menos de lo que el
+contador llama «cuentas por pagar» en Mercamio.
+
+**Consecuencia para quien genera el informe: si falta la columna de cuenta
+contable, todo cae en el grupo principal y los anticipos dejan de separarse.**
+
+---
+
+## 5. Bloque de encabezado (cuadre contable)
 
 Todo lo que esté **arriba** de la fila de cabecera se interpreta así:
 
@@ -76,12 +128,12 @@ Todo lo que esté **arriba** de la fila de cabecera se interpreta así:
 - **`Total Saldo Balance`**: se reconoce por el texto y se usa como cifra de
   control.
 - **`Dif`** (o `Diferencia`): la diferencia que el propio archivo declara.
-- **Fecha de corte**: una celda con el texto `fecha corte` y, a su derecha, la
-  fecha. Esa misma fila puede traer los totales por tramo, que se usan como
-  segunda cifra de control.
+- **Fecha de corte**: celda con el texto `fecha corte` y la fecha a su derecha.
+  Esa misma fila puede traer los totales por tramo, que se usan como segunda
+  cifra de control.
 
 El tablero compara el `Total Saldo Balance` contra la suma real de la columna de
-saldo del detalle, y semaforiza:
+saldo, y semaforiza:
 
 | Diferencia | Veredicto |
 |---|---|
@@ -89,45 +141,73 @@ saldo del detalle, y semaforiza:
 | hasta $1.000 | **Diferencia menor** |
 | más de $1.000 | **Descuadre** |
 
----
-
-## 5. Clasificación por cobrar / por pagar
-
-En este orden:
-
-1. **Nombre de la hoja** — `CXP`, `pagar` o `proveedor` → por pagar; `CXC`,
-   `cobrar` o `cliente` → por cobrar.
-2. **Cuenta contable (PUC)** — si la mayoría del saldo está en cuentas que
-   empiezan por `2`, es por pagar; por `1`, por cobrar.
-3. **Signo del saldo total** — negativo → por pagar.
-
-El tablero siempre informa en las notas de lectura qué criterio aplicó. Si dos
-hojas resultan del mismo tipo, sus documentos se suman.
+El cuadre se calcula siempre sobre el **total neto** de la hoja —todas las
+cuentas con su signo—, porque eso es lo que declara el informe. No depende del
+interruptor de anticipos.
 
 ---
 
-## 6. Cómo verificar un archivo antes de entregarlo
+## 6. Clasificación por cobrar / por pagar
+
+Por el nombre de la hoja: `CXP`, `pagar` o `proveedor` → por pagar; `CXC`,
+`cobrar` o `cliente` → por cobrar.
+
+Si el nombre no lo dice, se decide por las cuentas del PUC ponderadas por saldo,
+y **se avisa en pantalla para que alguien lo verifique**.
+
+Las hojas que no son de cartera (auxiliares del ERP, hojas en blanco) se omiten
+con una nota, no con un error.
+
+---
+
+## 7. Varios archivos a la vez
+
+Se pueden soltar tantos archivos como se quiera. Cada combinación de
+**(empresa, fecha de corte)** queda como un corte independiente.
+
+- **Varias empresas del mismo mes** → se pueden ver por separado o consolidadas.
+- **Varios meses de la misma empresa** → alimentan la gráfica de evolución.
+- **Las dos cosas a la vez** → también.
+
+Un corte que ya estaba se **reemplaza** por el del archivo nuevo. Es lo que se
+espera al volver a subir un informe corregido, y evita que dos versiones del
+mismo mes se sumen.
+
+**El detalle y la antigüedad muestran siempre UN corte**, el que se elija en el
+selector. Sumar cortes de meses distintos duplicaría los documentos que siguen
+abiertos en los dos. La evolución es lo único que cruza fechas, y lo hace sobre
+agregados mensuales.
+
+---
+
+## 8. Cómo verificar un archivo antes de entregarlo
 
 Sin abrir el navegador:
 
 ```bash
-npx tsx scripts/verificar-archivo.ts "ruta/al/reporte.xlsx"
+npx tsx scripts/verificar-archivo.ts "informe1.xlsx" "informe2.xlsx"
 ```
 
-Imprime hojas reconocidas, totales, tramos, el cuadre y todas las notas de
-lectura. **No imprime datos de terceros**, solo agregados y diagnóstico, así que
-su salida se puede pegar en un ticket sin exponer información de clientes.
+Imprime, por cada corte: empresa reconocida, fecha, cartera bruta contra
+anticipos, tramos, el cuadre y todas las notas de lectura. Termina con código de
+salida 1 si hubo errores, así que sirve en un script.
+
+**No imprime datos de terceros**, solo agregados y diagnóstico: su salida se
+puede pegar en un correo o un ticket sin exponer información de clientes.
+
+Es el primer paso obligado cuando entra una empresa nueva.
 
 ---
 
-## 7. Lo que el tablero NO hace
+## 9. Lo que el tablero NO hace
 
-Conviene tenerlo claro para no esperar algo que no ocurre:
-
-- **No guarda nada.** El archivo se lee en el navegador de quien lo abre. No se
-  sube, no queda en un servidor y no lo ve nadie más. La única copia que persiste
-  es en el almacenamiento local de ese navegador, y hay un botón para borrarla.
-- **No consolida periodos.** Cada carga reemplaza a la anterior. No hay histórico
-  ni comparación mes contra mes.
-- **No corrige el archivo.** Si el reporte viene descuadrado, el tablero lo
+- **No guarda el detalle en ningún servidor.** Los archivos se leen en el
+  navegador de quien los abre. Lo único que persiste es, en ese mismo navegador,
+  el historial mensual (agregados) y el detalle de los cortes más recientes si
+  cabe.
+- **No reconstruye meses que no se hayan subido.** Un informe es la foto de un
+  día. La gráfica de evolución solo tiene las columnas de los cortes cargados; si
+  un mes trae menos empresas que los demás, esa columna se dibuja rayada para que
+  la caída no se confunda con un pago.
+- **No corrige el archivo.** Si el informe viene descuadrado, el tablero lo
   señala; no lo ajusta.
