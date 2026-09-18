@@ -110,10 +110,33 @@ Lo mínimo: el nombre de la empresa en la primera columna, la etiqueta
 **saldo**. La columna de cuenta contable no es obligatoria pero sin ella los
 anticipos dejan de separarse.
 
-> **Trampa conocida del ERP:** el generador escribe «Merkmios» junto a la
-> etiqueta `fecha corte` en **todos** los informes, sean de la empresa que sean.
-> Por eso la empresa se lee de la primera columna y nunca de ahí. Está comentado
-> en [`lib/empresa.ts`](lib/empresa.ts) para que no se deshaga por accidente.
+### El informe se mantiene a mano, y eso cambia las defensas
+
+El archivo no lo genera el ERP: alguien copia el del mes anterior y lo edita.
+Se ve en las notas escritas a mano del bloque de cuadre, en las columnas de
+verificación que solo están en algunos, y en `Author: «Contadora»`. Por eso
+**cualquier celda del encabezado puede venir heredada**, no solo el nombre de la
+empresa.
+
+Dos defensas, según lo que se pueda verificar:
+
+**La fecha de corte sí se verifica.** `D_venc` lo calculó el ERP contra el corte
+real, así que `Fecha_vcto + D_venc` lo reconstruye en cada fila. En los tres
+informes al 31-ago-2026 las 10.875 filas dan el mismo resultado, sin una sola
+excepción. El tablero **propone la fecha de los datos** y dice cuál traía la
+celda. Probado con un archivo al que se le dejó la fecha del mes anterior: lo
+detecta con 5.176 de 5.176 filas y 31 días de desfase.
+
+**La empresa no se puede verificar contra nada.** El archivo escribe «Merkmios»
+junto a `fecha corte` en los tres informes, sean de la empresa que sean, y las
+propiedades del libro no traen `Company`. El único dato es texto libre en la
+primera columna. Como no hay nada contra qué contrastarlo, la defensa es otra:
+**nada entra al historial sin confirmación**, y las empresas nuevas parecidas a
+una existente se señalan con un botón para unirlas.
+
+Esto vive en [`lib/revision.ts`](lib/revision.ts) y
+[`components/ConfirmarCarga.tsx`](components/ConfirmarCarga.tsx). Si algo entró
+mal de todos modos, «Corregir o unir empresas» renombra o fusiona series.
 
 ---
 
@@ -125,6 +148,8 @@ app/
   page.tsx          orquestador: estado, carga de archivos, selección compartida
   globals.css       tokens de diseño y estilos
 components/
+  ConfirmarCarga.tsx  revisión previa: nada entra al historial sin confirmar
+  GestionEmpresas.tsx renombrar o fusionar empresas ya guardadas
   KpiGrid.tsx       cifras de cabecera
   AgingChart.tsx    barras de antigüedad — son un control, no un dibujo
   EvolucionChart.tsx  columnas mensuales en SVG
@@ -137,6 +162,7 @@ components/
 lib/
   parser.ts         ingesta del Excel — el estándar vive aquí
   empresa.ts        identificación de la empresa dueña del informe
+  revision.ts       qué se revisa antes de cargar y por qué
   aggregate.ts      tramos, grupos, agrupaciones, cuadre, serie mensual, CSV
   almacen.ts        persistencia en el navegador, exportación del historial
   escala.ts         escala del eje con marcas en cifras redondas

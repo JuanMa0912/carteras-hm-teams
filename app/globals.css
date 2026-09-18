@@ -570,3 +570,47 @@ footer.pie {
   .vista-grid { grid-template-columns: 1fr; }
   .grafica-tip { position: static; margin-top: 10px; max-width: none; }
 }
+
+/* =====================================================================
+   Confirmacion de carga y gestion de empresas
+   ===================================================================== */
+
+.confirmar { border-color: var(--baseline); }
+.confirmar-intro {
+  margin: 0 0 18px; font-size: 13px; line-height: 1.6; color: var(--ink-2);
+  max-width: 78ch;
+}
+.tabla-confirmar td { vertical-align: top; padding: 12px 10px; }
+.tabla-confirmar select,
+.tabla-confirmar input[type='text'],
+.tabla-confirmar input[type='date'] { width: 100%; min-width: 150px; }
+.tabla-confirmar .confirmar-archivo {
+  font-size: 12.5px; color: var(--ink-2); max-width: 230px; word-break: break-word;
+}
+.confirmar-origen { font-size: 11.5px; color: var(--ink-muted); margin-top: 5px; }
+.confirmar-cifra { font-size: 12.5px; white-space: nowrap; }
+.confirmar-cifra + .confirmar-cifra { margin-top: 3px; }
+.fila-bloqueada td { background: color-mix(in srgb, var(--critical) 7%, transparent); }
+
+.confirmar-acciones {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--grid);
+}
+
+.btn-inline {
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  padding: 2px 9px; border-radius: 6px; margin-left: 2px;
+  border: 1px solid currentColor; background: transparent; color: inherit;
+}
+.btn-inline:hover { background: var(--surface); }
+
+.gestion { border-top: 1px solid var(--grid); padding-top: 12px; }
+.gestion-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px 18px; align-items: end;
+}
+
+@media (max-width: 720px) {
+  .gestion-grid { grid-template-columns: 1fr; }
+  .tabla-confirmar td { padding: 10px 8px; }
+}

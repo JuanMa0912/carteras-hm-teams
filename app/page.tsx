@@ -8,7 +8,7 @@ import {
 } from '@/lib/aggregate';
 import {
   cargar, exportarHistorial, fundirHistorial, guardar, historialDeCortes,
-  HistorialInvalidoError, importarHistorial, limpiar,
+  HistorialInvalidoError, importarHistorial, limpiar, reasignarEmpresa,
 } from '@/lib/almacen';
 import { CONSOLIDADO, etiquetaScope } from '@/lib/empresa';
 import { fmtDate, fmtMoney, fmtNum, NOTA_ESCALA, type Escala } from '@/lib/format';
@@ -16,10 +16,12 @@ import type { Aviso, Corte, DocVista, PuntoHistorial, Tipo } from '@/lib/types';
 
 import AgingChart from '@/components/AgingChart';
 import AvisosPanel from '@/components/AvisosPanel';
+import ConfirmarCarga from '@/components/ConfirmarCarga';
 import CuadrePanel from '@/components/CuadrePanel';
 import DetailTable from '@/components/DetailTable';
 import EmptyState from '@/components/EmptyState';
 import EvolucionChart from '@/components/EvolucionChart';
+import GestionEmpresas from '@/components/GestionEmpresas';
 import KpiGrid from '@/components/KpiGrid';
 import TopTable from '@/components/TopTable';
 import TramoEditor from '@/components/TramoEditor';
@@ -45,6 +47,8 @@ export default function Page() {
   const [historial, setHistorial] = useState<PuntoHistorial[]>([]);
   const [avisos, setAvisos] = useState<Aviso[]>([]);
   const [detalleDescartado, setDetalleDescartado] = useState(false);
+  /** Cortes leidos pero aun no confirmados. Nada entra al historial desde aqui. */
+  const [pendientes, setPendientes] = useState<Corte[] | null>(null);
 
   const [scope, setScope] = useState<string>(CONSOLIDADO);
   const [fechaSel, setFechaSel] = useState<string>('');
@@ -104,7 +108,12 @@ export default function Page() {
     if (g.cortes.length) setCortes(g.cortes);
   }, []);
 
-  /* ---------- carga de archivos ---------- */
+  /* ---------- carga de archivos ----------
+   *
+   * Leer NO es cargar. Los cortes quedan pendientes hasta que alguien los
+   * confirma en `ConfirmarCarga`: la empresa y la fecha del encabezado pueden
+   * venir heredadas del mes anterior, y una vez dentro del historial el daño no
+   * se ve. Ver `lib/revision.ts`. */
   const procesar = useCallback(
     async (files: File[]) => {
       if (!files.length) return;
@@ -116,38 +125,43 @@ export default function Page() {
           avisar('No se reconoció ningún corte. Revisa las notas de lectura.', true);
           return;
         }
-
-        /* Un corte que ya estaba se reemplaza por el nuevo: es lo que se
-         * espera al volver a subir un informe corregido. */
-        const fusion = new Map<string, Corte>();
-        for (const c of cortes) fusion.set(c.id, c);
-        for (const c of r.cortes) fusion.set(c.id, c);
-        const todos = Array.from(fusion.values()).sort(
-          (a, b) => a.fecha.localeCompare(b.fecha) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
-        );
-
-        const hist = fundirHistorial(historial, historialDeCortes(r.cortes));
-        setCortes(todos);
-        setHistorial(hist);
-        setDetalleDescartado(guardar(hist, todos));
-
-        /* Se muestra el corte más reciente de los que acaban de entrar. */
-        const ultima = r.cortes.reduce((a, c) => (c.fecha > a ? c.fecha : a), r.cortes[0].fecha);
-        setFechaSel(ultima);
-        setSel({ tipo: 'CXC', tramo: null, nits: [] });
-
-        const empresas = new Set(r.cortes.map((c) => c.empresaId)).size;
-        const meses = new Set(r.cortes.map((c) => c.mes)).size;
-        avisar(
-          `${r.cortes.length} corte${r.cortes.length === 1 ? '' : 's'} cargado${
-            r.cortes.length === 1 ? '' : 's'
-          }: ${empresas} empresa${empresas === 1 ? '' : 's'}, ${meses} mes${meses === 1 ? '' : 'es'}.`
-        );
+        setPendientes(r.cortes);
       } catch (e) {
         avisar('No se pudo leer: ' + (e instanceof Error ? e.message : String(e)), true);
       } finally {
         setCargando(false);
       }
+    },
+    [avisar]
+  );
+
+  const confirmarCarga = useCallback(
+    (nuevos: Corte[]) => {
+      /* Un corte que ya estaba se reemplaza por el nuevo: es lo que se espera
+       * al volver a subir un informe corregido. */
+      const fusion = new Map<string, Corte>();
+      for (const c of cortes) fusion.set(c.id, c);
+      for (const c of nuevos) fusion.set(c.id, c);
+      const todos = Array.from(fusion.values()).sort(
+        (a, b) => a.fecha.localeCompare(b.fecha) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
+      );
+
+      const hist = fundirHistorial(historial, historialDeCortes(nuevos));
+      setCortes(todos);
+      setHistorial(hist);
+      setDetalleDescartado(guardar(hist, todos));
+      setPendientes(null);
+
+      const ultima = nuevos.reduce((a, c) => (c.fecha > a ? c.fecha : a), nuevos[0].fecha);
+      setFechaSel(ultima);
+      setSel({ tipo: 'CXC', tramo: null, nits: [] });
+
+      const nEmp = new Set(nuevos.map((c) => c.empresaId)).size;
+      const nMes = new Set(nuevos.map((c) => c.mes)).size;
+      avisar(
+        `${nuevos.length} corte${nuevos.length === 1 ? '' : 's'} cargado${nuevos.length === 1 ? '' : 's'}: ` +
+          `${nEmp} empresa${nEmp === 1 ? '' : 's'}, ${nMes} mes${nMes === 1 ? '' : 'es'}.`
+      );
     },
     [avisar, cortes, historial]
   );
@@ -331,6 +345,21 @@ export default function Page() {
     }
   }
 
+  function reasignar(idOrigen: string, idDestino: string, nombreDestino: string) {
+    const r = reasignarEmpresa(historial, cortes, idOrigen, idDestino, nombreDestino);
+    setHistorial(r.historial);
+    setCortes(r.cortes);
+    setDetalleDescartado(guardar(r.historial, r.cortes));
+    if (scope === idOrigen) setScope(idDestino);
+    avisar(
+      r.colisiones > 0
+        ? `Empresas unidas. ${r.colisiones} registro${
+            r.colisiones === 1 ? '' : 's'
+          } del mismo mes se descartó porque ya existía en la empresa destino.`
+        : 'Empresa actualizada.'
+    );
+  }
+
   function borrarTodo() {
     setCortes([]);
     setHistorial([]);
@@ -395,6 +424,19 @@ export default function Page() {
           />
         </div>
       </div>
+
+      {pendientes && (
+        <ConfirmarCarga
+          pendientes={pendientes}
+          historial={historial}
+          conocidas={empresas}
+          onConfirmar={confirmarCarga}
+          onCancelar={() => {
+            setPendientes(null);
+            avisar('Carga descartada. No se guardó nada.');
+          }}
+        />
+      )}
 
       {!hayDatos ? (
         <>
@@ -494,6 +536,12 @@ export default function Page() {
                 </div>
               )}
             </div>
+
+            {empresas.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <GestionEmpresas empresas={empresas} historial={historial} onReasignar={reasignar} />
+              </div>
+            )}
           </section>
 
           {/* ---------- resumen ---------- */}

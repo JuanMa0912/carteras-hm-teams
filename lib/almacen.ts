@@ -187,3 +187,76 @@ export function importarHistorial(texto: string): PuntoHistorial[] {
   }
   return out;
 }
+
+/* ---------------- reparacion ---------------- */
+
+/**
+ * Renombra o fusiona una empresa en el historial y en los cortes cargados.
+ *
+ * Hace falta porque el paso de confirmacion evita el problema hacia adelante,
+ * pero no arregla lo que ya se guardo mal. Los dos casos que repara:
+ *
+ * - **Renombrar**: el nombre entro feo o incompleto y se quiere corregir.
+ * - **Fusionar**: la misma empresa entro con dos nombres distintos
+ *   («Floralia» y «Comercializadora Floralia») y su serie quedo partida en dos
+ *   medias series. Se pasa el id destino de una que ya existe.
+ *
+ * En una fusion, si las dos empresas tienen dato del MISMO mes y cartera, gana
+ * el de la empresa destino y el otro se pierde. Es ambiguo por naturaleza —dos
+ * saldos para el mismo mes de la misma empresa no pueden ser los dos ciertos—
+ * asi que se devuelve cuantos se perdieron para poder avisarlo.
+ */
+export function reasignarEmpresa(
+  historial: readonly PuntoHistorial[],
+  cortes: readonly Corte[],
+  idOrigen: string,
+  idDestino: string,
+  nombreDestino: string
+): { historial: PuntoHistorial[]; cortes: Corte[]; colisiones: number } {
+  /* Primero los que NO se mueven, para que el destino gane las colisiones. */
+  const mapa = new Map<string, PuntoHistorial>();
+  const llave = (p: PuntoHistorial) => `${p.empresaId}|${p.mes}|${p.tipo}`;
+  let colisiones = 0;
+
+  for (const p of historial) {
+    if (p.empresaId === idOrigen) continue;
+    const q = p.empresaId === idDestino ? { ...p, empresaNombre: nombreDestino } : p;
+    mapa.set(llave(q), q);
+  }
+  for (const p of historial) {
+    if (p.empresaId !== idOrigen) continue;
+    const q = { ...p, empresaId: idDestino, empresaNombre: nombreDestino };
+    if (mapa.has(llave(q))) {
+      colisiones++;
+      continue;
+    }
+    mapa.set(llave(q), q);
+  }
+
+  const historialNuevo = Array.from(mapa.values()).sort(
+    (a, b) => a.mes.localeCompare(b.mes) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
+  );
+
+  const porId = new Map<string, Corte>();
+  for (const c of cortes) {
+    if (c.empresaId !== idOrigen && c.empresaId !== idDestino) {
+      porId.set(c.id, c);
+      continue;
+    }
+    const q: Corte = {
+      ...c,
+      empresaId: idDestino,
+      empresaNombre: nombreDestino,
+      id: idDestino + '|' + c.fecha,
+    };
+    /* Si ya hay un corte del destino en esa fecha, se conserva el del destino. */
+    if (c.empresaId === idOrigen && porId.has(q.id)) continue;
+    porId.set(q.id, q);
+  }
+
+  const cortesNuevos = Array.from(porId.values()).sort(
+    (a, b) => a.fecha.localeCompare(b.fecha) || a.empresaNombre.localeCompare(b.empresaNombre, 'es')
+  );
+
+  return { historial: historialNuevo, cortes: cortesNuevos, colisiones };
+}

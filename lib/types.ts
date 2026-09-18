@@ -41,6 +41,26 @@ export interface TramoArchivo {
   col: number;
 }
 
+/**
+ * Coherencia de la fecha de corte contra los propios datos.
+ *
+ * El informe no lo genera el ERP: alguien copia el archivo del mes anterior y
+ * lo edita, asi que la celda «fecha corte» puede quedar con la fecha vieja. Los
+ * datos permiten desmentirla: `D_venc` lo calculo el ERP contra el corte REAL,
+ * asi que `Fecha_vcto + D_venc` reconstruye esa fecha fila por fila.
+ *
+ * Verificado el 18-sep-2026 sobre los tres informes al 31-ago: las 10.875
+ * filas de las seis hojas dan el mismo corte, sin una sola excepcion.
+ */
+export interface Coherencia {
+  /** Lo que dice la celda «fecha corte». */
+  declarado: string | null;
+  /** La fecha que reconstruyen los datos (la moda de Fecha_vcto + D_venc). */
+  derivado: string | null;
+  filasCoinciden: number;
+  filasEvaluadas: number;
+}
+
 /** Los datos de una cartera (CxC o CxP) de una empresa a una fecha. */
 export interface Cartera {
   tipo: Tipo;
@@ -52,6 +72,7 @@ export interface Cartera {
   controlTramos: number[] | null;
   controlTotal: number | null;
   tramosArchivo: TramoArchivo[];
+  coherencia: Coherencia;
 }
 
 /**

@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { identificarEmpresa } from './empresa';
 import { norm } from './format';
 import type {
-  Aviso, Cartera, Corte, Doc, Grupo, LineaBalance, ResultadoLectura, Tipo, TramoArchivo,
+  Aviso, Cartera, Coherencia, Corte, Doc, Grupo, LineaBalance, ResultadoLectura, Tipo, TramoArchivo,
 } from './types';
 
 /* ------------------------------------------------------------------
@@ -89,6 +89,44 @@ function num(v: unknown): number {
 
 function diasEntre(isoA: string, isoB: string): number {
   return Math.round((Date.parse(isoA + 'T00:00:00Z') - Date.parse(isoB + 'T00:00:00Z')) / 86400000);
+}
+
+function sumarDias(iso: string, n: number): string {
+  const d = new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Reconstruye la fecha de corte a partir de los datos.
+ *
+ * `D_venc` lo calculó el ERP contra el corte real, así que `Fecha_vcto + D_venc`
+ * devuelve esa fecha en cada fila. Se toma la moda, no la primera: una fila con
+ * la fecha mal escrita no puede mandar sobre las otras dos mil.
+ *
+ * Solo tiene sentido si la columna de días venía en el archivo. Cuando la
+ * calculamos nosotros contra la celda de corte, comprobarla contra sí misma no
+ * demuestra nada, y por eso `docsConDiasPropios` llega vacío en ese caso.
+ */
+function derivarCorte(
+  docsConDiasPropios: { fechaVcto: string | null; dVenc: number }[]
+): { derivado: string | null; filasCoinciden: number; filasEvaluadas: number } {
+  const conteo = new Map<string, number>();
+  let evaluadas = 0;
+  for (const d of docsConDiasPropios) {
+    if (!d.fechaVcto) continue;
+    const f = sumarDias(d.fechaVcto, d.dVenc);
+    conteo.set(f, (conteo.get(f) ?? 0) + 1);
+    evaluadas++;
+  }
+  let derivado: string | null = null;
+  let mejor = 0;
+  for (const [f, n] of conteo) {
+    if (n > mejor) {
+      mejor = n;
+      derivado = f;
+    }
+  }
+  return { derivado, filasCoinciden: mejor, filasEvaluadas: evaluadas };
 }
 
 function puntuarCabecera(fila: unknown[]): number {
@@ -277,7 +315,10 @@ function leerHoja(archivo: string, hoja: string, filas: unknown[][], avisos: Avi
 
   /* --- 8. filas de detalle --- */
   const docs: Doc[] = [];
-  let sinDVenc = 0;
+  /** Índices de `docs` cuyos días hay que calcular una vez se sepa el corte. */
+  const pendientesDias: number[] = [];
+  /** Filas con días propios del archivo: las únicas que sirven para verificar el corte. */
+  const conDiasPropios: { fechaVcto: string | null; dVenc: number }[] = [];
   let sinCuenta = 0;
   for (let r = headerIdx + 1; r < filas.length; r++) {
     const fila = filas[r];
@@ -297,15 +338,12 @@ function leerHoja(archivo: string, hoja: string, filas: unknown[][], avisos: Avi
     if (saldo === 0) continue;
 
     const fechaVcto = col.fechaVcto != null ? aIso(fila[col.fechaVcto]) : null;
-    let dVenc: number;
+    let dVenc = 0;
     if (col.dVenc != null && esNumero(fila[col.dVenc])) {
       dVenc = Math.round(fila[col.dVenc] as number);
-    } else if (fechaVcto && fechaCorte) {
-      dVenc = diasEntre(fechaCorte, fechaVcto);
-      sinDVenc++;
+      conDiasPropios.push({ fechaVcto, dVenc });
     } else {
-      dVenc = 0;
-      sinDVenc++;
+      pendientesDias.push(docs.length);
     }
 
     docs.push({
@@ -330,14 +368,6 @@ function leerHoja(archivo: string, hoja: string, filas: unknown[][], avisos: Avi
     avisos.push({ nivel: 'aviso', archivo, hoja, mensaje: 'La cabecera se reconoció pero no hay filas con saldo debajo.' });
     return null;
   }
-  if (sinDVenc) {
-    avisos.push({
-      nivel: 'info',
-      archivo,
-      hoja,
-      mensaje: `${sinDVenc} de ${docs.length} documentos no traían días vencidos; se calcularon contra la fecha de corte.`,
-    });
-  }
   if (sinCuenta) {
     avisos.push({
       nivel: 'info',
@@ -346,19 +376,64 @@ function leerHoja(archivo: string, hoja: string, filas: unknown[][], avisos: Avi
       mensaje: `${sinCuenta} filas se omitieron por no tener un código de cuenta contable válido (suelen ser subtotales).`,
     });
   }
-  if (!fechaCorte) {
+
+  /* --- 9. verificar la fecha de corte contra los datos --- */
+  const { derivado, filasCoinciden, filasEvaluadas } = derivarCorte(conDiasPropios);
+  const coherencia: Coherencia = { declarado: fechaCorte, derivado, filasCoinciden, filasEvaluadas };
+
+  /* Sin celda de corte pero con datos que la reconstruyen, el corte se salva. */
+  const fechaFinal = fechaCorte ?? derivado;
+  if (!fechaFinal) {
     avisos.push({
       nivel: 'error',
       archivo,
       hoja,
-      mensaje: 'No se encontró la fecha de corte (se busca la etiqueta «fecha corte» en la cabecera). Sin ella el corte no se puede ubicar en el tiempo y la hoja se omitió.',
+      mensaje:
+        'No se pudo establecer la fecha de corte: no está la etiqueta «fecha corte» y los datos tampoco la reconstruyen ' +
+        '(hace falta la columna de días vencidos junto con la de fecha de vencimiento). La hoja se omitió.',
     });
     return null;
   }
+  if (!fechaCorte) {
+    avisos.push({
+      nivel: 'aviso',
+      archivo,
+      hoja,
+      mensaje: `No está la etiqueta «fecha corte», pero los datos la reconstruyen: ${derivado}. Verifícala antes de confirmar.`,
+    });
+  } else if (derivado && derivado !== fechaCorte) {
+    const desfase = diasEntre(fechaCorte, derivado);
+    avisos.push({
+      nivel: 'error',
+      archivo,
+      hoja,
+      mensaje:
+        `La celda «fecha corte» dice ${fechaCorte}, pero los datos corresponden a ${derivado} ` +
+        `(${filasCoinciden} de ${filasEvaluadas} filas, ${Math.abs(desfase)} días de desfase). ` +
+        'Suele pasar al copiar el archivo del mes anterior y no cambiar esa celda. Corrígela antes de confirmar.',
+    });
+  }
+
+  /* Ahora sí se pueden calcular los días de las filas que no los traían. */
+  if (pendientesDias.length) {
+    for (const i of pendientesDias) {
+      const d = docs[i];
+      d.dVenc = d.fechaVcto ? diasEntre(fechaFinal, d.fechaVcto) : 0;
+    }
+    avisos.push({
+      nivel: 'info',
+      archivo,
+      hoja,
+      mensaje: `${pendientesDias.length} de ${docs.length} documentos no traían días vencidos; se calcularon contra la fecha de corte.`,
+    });
+  }
 
   return {
-    cartera: { tipo, hoja, docs, balance, totalBalance, difArchivo, controlTramos, controlTotal, tramosArchivo },
-    fechaCorte,
+    cartera: {
+      tipo, hoja, docs, balance, totalBalance, difArchivo,
+      controlTramos, controlTotal, tramosArchivo, coherencia,
+    },
+    fechaCorte: fechaFinal,
     empresaTexto,
   };
 }

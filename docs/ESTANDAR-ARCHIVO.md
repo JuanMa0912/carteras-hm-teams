@@ -34,19 +34,32 @@ muestra un error que dice qué encontró y qué no. Nunca falla en silencio.
 La comparación ignora mayúsculas, tildes y espacios de más: `Proveedor`,
 `PROVEEDOR` y `proveedor ` son el mismo nombre.
 
-> ### ⚠ De dónde se lee el nombre de la empresa
+> ### ⚠ El informe se mantiene a mano, no lo genera el ERP
 >
-> **Siempre de la primera columna.** Nunca de la celda que está junto a
-> `fecha corte`.
+> Se ve en los propios archivos: hay notas escritas a mano en el bloque de
+> cuadre (`«Valor mayor en el modulo de cxp»`, `«2335 SERVICIOS PUBLICOS»`),
+> columnas de verificación que solo están en algunos, y `Author: «Contadora»` en
+> las propiedades del libro. **Alguien copia el archivo del mes anterior y lo
+> edita.**
 >
-> El generador del ERP escribe ahí **«Merkmios» en todos los informes**, sean de
-> la empresa que sean. Comprobado el 18-sep-2026 con los tres informes al
-> 31-ago: los de Mercamio y Comercializadora Floralia también dicen «Merkmios»
-> en esa celda. Si alguna vez hay que tocar esta parte del código, apoyarse en
-> esa celda juntaría las tres empresas bajo un mismo nombre sin que nada avise.
+> La consecuencia es que **cualquier celda del encabezado puede venir heredada
+> del mes pasado**. Dos en concreto hacen daño, y el daño no se ve:
 >
-> Consecuencia práctica para quien genera el informe: **la celda A1 tiene que
-> traer el nombre correcto de la empresa.** Es lo único que la distingue.
+> **El nombre de la empresa.** El archivo escribe «Merkmios» en la celda vecina
+> a `fecha corte` en los TRES informes, sean de la empresa que sean — quedó
+> pegado de la plantilla. Por eso la empresa se lee **siempre de la primera
+> columna** y nunca de ahí. No hay en el archivo ningún otro identificador: las
+> propiedades del libro no traen `Company` y el `Author` es la persona que lo
+> editó. Esta no se puede verificar contra nada; solo confirmarla.
+>
+> **La fecha de corte.** Esta sí se puede desmentir con los datos. `D_venc` lo
+> calculó el ERP contra el corte real, así que `Fecha_vcto + D_venc` reconstruye
+> esa fecha en cada fila. Verificado el 18-sep-2026 sobre los tres informes: las
+> 10.875 filas de las seis hojas dan el mismo corte, sin una sola excepción.
+> **El tablero propone la fecha de los datos, no la de la celda**, y dice cuál
+> traía cada una.
+>
+> Ninguna de las dos entra sin confirmación. Ver §8.
 
 ---
 
@@ -180,7 +193,27 @@ agregados mensuales.
 
 ---
 
-## 8. Cómo verificar un archivo antes de entregarlo
+## 8. Confirmación antes de cargar
+
+Leer un archivo **no** es cargarlo. Al soltar los archivos aparece un panel con
+lo que se entendió de cada uno —empresa, fecha de corte, totales— y nada entra
+al tablero ni al historial hasta que alguien pulsa confirmar.
+
+Los dos campos son editables, y el tablero señala:
+
+| Situación | Qué dice |
+|---|---|
+| La celda de corte no coincide con los días vencidos | Propone la fecha de los datos y dice cuál traía la celda |
+| Ya hay un corte de esa empresa en ese mes con otro saldo | Pregunta si es un informe corregido |
+| Una empresa nueva se parece a una que ya tiene historial | Ofrece unirlas con un clic |
+| Dos archivos de la misma carga quedarían iguales | **Bloquea** la confirmación |
+
+Si aun así entró algo mal, **«Corregir o unir empresas»** renombra una empresa
+o funde dos series que se partieron.
+
+---
+
+## 9. Cómo verificar un archivo antes de entregarlo
 
 Sin abrir el navegador:
 
@@ -199,7 +232,7 @@ Es el primer paso obligado cuando entra una empresa nueva.
 
 ---
 
-## 9. Lo que el tablero NO hace
+## 10. Lo que el tablero NO hace
 
 - **No guarda el detalle en ningún servidor.** Los archivos se leen en el
   navegador de quien los abre. Lo único que persiste es, en ese mismo navegador,
